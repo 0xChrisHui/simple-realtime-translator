@@ -9,6 +9,7 @@ The app is designed for an in-person meeting setup: a laptop captures speech, th
 - English and Chinese realtime translation with `gpt-realtime-translate`
 - `Focus View` for one large reverse-translation caption
 - `Split View` for simultaneous English and Chinese captions
+- Floating captions for presenting slides while keeping subtitles visible
 - Manual audio input selection for microphones or system-provided audio devices
 - Adjustable English and Chinese caption font sizes
 - Local one-click transcript export
@@ -72,5 +73,6 @@ The microphone audio is sent as a WebRTC track. Translated captions and input tr
 ## Notes
 
 - Use headphones during testing if translated audio playback is enabled, otherwise the microphone may capture playback audio.
+- The floating caption window uses Document Picture-in-Picture when the browser supports it. Use Chrome or Edge for the best always-on-top behavior over PPT.
 - The current UI is tuned for English/Chinese conference display.
 - For public usage, keep `ACCESS_CODE` enabled and monitor OpenAI usage.
