@@ -1,0 +1,669 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+
+type Status = "idle" | "connecting" | "live" | "stopping" | "error";
+type TargetLanguage = "en" | "zh";
+type CaptionMap = Record<TargetLanguage, string>;
+type DisplayMode = "dual" | "single";
+type AudioInputDevice = {
+  deviceId: string;
+  label: string;
+};
+type CaptionFontSizeMap = Record<TargetLanguage, number>;
+type CaptionFontSizeInputMap = Record<TargetLanguage, string>;
+type CaptionFontStyle = CSSProperties & {
+  "--caption-font-size-en": string;
+  "--caption-font-size-zh": string;
+  "--watermark-image": string;
+};
+
+type RealtimeEvent = {
+  type?: string;
+  delta?: string;
+  transcript?: string;
+  error?: { message?: string };
+  [key: string]: unknown;
+};
+
+const TARGETS: Array<{ code: TargetLanguage; label: string; placeholder: string }> = [
+  { code: "en", label: "English", placeholder: "Waiting for English captions" },
+  { code: "zh", label: "中文", placeholder: "等待中文字幕" },
+];
+const INPUT_TRANSCRIPT_TARGET: TargetLanguage = "zh";
+const DEFAULT_CAPTION_FONT_SIZES: CaptionFontSizeMap = { en: 60, zh: 70 };
+const MIN_CAPTION_FONT_SIZE = 24;
+const MAX_CAPTION_FONT_SIZE = 180;
+const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
+
+function formatWatermarkImage(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "none";
+
+  return `url("${trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}")`;
+}
+
+function appendCaptionDelta(previous: string, delta: string, maxChars: number) {
+  const next = `${previous}${delta}`.replace(/[ \t\r\n]+/g, " ");
+  if (next.length <= maxChars) return next;
+
+  const clipped = next.slice(-maxChars);
+  const sentenceStart = clipped.search(/[。！？.!?]\s?/);
+  if (sentenceStart > 0 && sentenceStart < Math.floor(maxChars / 3)) {
+    return clipped.slice(sentenceStart + 1).trimStart();
+  }
+
+  return clipped.trimStart();
+}
+
+function appendSavedCaptionDelta(previous: string, delta: string) {
+  return `${previous}${delta}`.replace(/[ \t\r\n]+/g, " ").trimStart();
+}
+
+function detectInputLanguage(delta: string, fallback: TargetLanguage): TargetLanguage {
+  if (/[\u3400-\u9fff]/.test(delta)) return "zh";
+  if (/[A-Za-z]/.test(delta)) return "en";
+  return fallback;
+}
+
+function formatTimestampForFile(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(
+    date.getMinutes()
+  )}${pad(date.getSeconds())}`;
+}
+
+function formatTimestampForText(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(
+    date.getMinutes()
+  )}:${pad(date.getSeconds())}`;
+}
+
+function clampCaptionFontSize(value: number) {
+  return Math.min(MAX_CAPTION_FONT_SIZE, Math.max(MIN_CAPTION_FONT_SIZE, value));
+}
+
+function getErrorMessage(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object") return fallback;
+
+  const error = (data as Record<string, unknown>).error;
+  if (typeof error === "string") return error;
+
+  if (error && typeof error === "object") {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string") return message;
+  }
+
+  return fallback;
+}
+
+function getClientSecret(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+
+  const record = data as Record<string, unknown>;
+  if (typeof record.value === "string") return record.value;
+
+  const clientSecret = record.client_secret;
+  if (clientSecret && typeof clientSecret === "object") {
+    const value = (clientSecret as Record<string, unknown>).value;
+    if (typeof value === "string") return value;
+  }
+
+  const secret = record.secret;
+  if (secret && typeof secret === "object") {
+    const value = (secret as Record<string, unknown>).value;
+    if (typeof value === "string") return value;
+  }
+
+  return null;
+}
+
+export default function Home() {
+  const [status, setStatus] = useState<Status>("idle");
+  const [captions, setCaptions] = useState<CaptionMap>({ en: "", zh: "" });
+  const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>({ en: "", zh: "" });
+  const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("single");
+  const [error, setError] = useState("");
+  const [audioInputs, setAudioInputs] = useState<AudioInputDevice[]>([]);
+  const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
+  const [captionFontSizes, setCaptionFontSizes] = useState<CaptionFontSizeMap>(DEFAULT_CAPTION_FONT_SIZES);
+  const [captionFontSizeInputs, setCaptionFontSizeInputs] = useState<CaptionFontSizeInputMap>({
+    en: String(DEFAULT_CAPTION_FONT_SIZES.en),
+    zh: String(DEFAULT_CAPTION_FONT_SIZES.zh),
+  });
+
+  const statusRef = useRef<Status>("idle");
+  const accessCodeRef = useRef("");
+  const selectedAudioInputIdRef = useRef("");
+  const sourceStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionsRef = useRef<Partial<Record<TargetLanguage, RTCPeerConnection>>>({});
+  const dataChannelsRef = useRef<Partial<Record<TargetLanguage, RTCDataChannel>>>({});
+  const connectedTargetsRef = useRef<Set<TargetLanguage>>(new Set());
+  const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
+  const lastInputLanguageRef = useRef<TargetLanguage>("en");
+  const savedCaptionsRef = useRef<CaptionMap>({ en: "", zh: "" });
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      TARGETS.forEach(({ code }) => {
+        const scroller = captionScrollerRefs.current[code];
+        if (!scroller) return;
+        scroller.scrollTop = scroller.scrollHeight;
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [captions, displayMode, translationCaptions]);
+
+  const setRealtimeStatus = useCallback((nextStatus: Status) => {
+    statusRef.current = nextStatus;
+    setStatus(nextStatus);
+  }, []);
+
+  useEffect(() => {
+    try {
+      accessCodeRef.current = window.localStorage.getItem("translatorAccessCode") ?? "";
+    } catch {
+      accessCodeRef.current = "";
+    }
+  }, []);
+
+  const getAccessCodeHeaders = useCallback((): Record<string, string> => {
+    return accessCodeRef.current ? { "x-access-code": accessCodeRef.current } : {};
+  }, []);
+
+  const requestAccessCode = useCallback(() => {
+    const accessCode = window.prompt("Access code");
+    const nextAccessCode = accessCode?.trim();
+    if (!nextAccessCode) return false;
+
+    accessCodeRef.current = nextAccessCode;
+    try {
+      window.localStorage.setItem("translatorAccessCode", nextAccessCode);
+    } catch {
+      // The code still works for this tab even when local storage is unavailable.
+    }
+
+    return true;
+  }, []);
+
+  const refreshAudioInputs = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setError("This browser cannot list audio input devices.");
+      return;
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices
+        .filter((device) => device.kind === "audioinput" && device.deviceId)
+        .map((device, index) => ({
+          deviceId: device.deviceId,
+          label: device.label || `Microphone ${index + 1}`,
+        }));
+
+      setAudioInputs(inputs);
+
+      const selectedId = selectedAudioInputIdRef.current;
+      if (selectedId && !inputs.some((device) => device.deviceId === selectedId)) {
+        selectedAudioInputIdRef.current = "";
+        setSelectedAudioInputId("");
+      }
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Could not refresh audio sources.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAudioInputs();
+
+    if (!navigator.mediaDevices?.addEventListener) return;
+
+    navigator.mediaDevices.addEventListener("devicechange", refreshAudioInputs);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", refreshAudioInputs);
+  }, [refreshAudioInputs]);
+
+  const cleanupRealtime = useCallback(() => {
+    Object.values(dataChannelsRef.current).forEach((channel) => channel?.close());
+    dataChannelsRef.current = {};
+
+    Object.values(peerConnectionsRef.current).forEach((peerConnection) => {
+      peerConnection?.getSenders().forEach((sender) => sender.track?.stop());
+      peerConnection?.getReceivers().forEach((receiver) => receiver.track?.stop());
+      peerConnection?.close();
+    });
+    peerConnectionsRef.current = {};
+    connectedTargetsRef.current.clear();
+
+    const sourceStream = sourceStreamRef.current;
+    sourceStreamRef.current = null;
+    sourceStream?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  const stop = useCallback(() => {
+    if (statusRef.current !== "idle") setRealtimeStatus("stopping");
+    cleanupRealtime();
+    setRealtimeStatus("idle");
+  }, [cleanupRealtime, setRealtimeStatus]);
+
+  const createClientSecret = useCallback(async (targetLanguage: TargetLanguage) => {
+    const createSessionRequest = () =>
+      fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
+        body: JSON.stringify({ targetLanguage }),
+      });
+
+    const accessCodeBeforeRequest = accessCodeRef.current;
+    let sessionResponse = await createSessionRequest();
+    if (sessionResponse.status === 401) {
+      if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
+        sessionResponse = await createSessionRequest();
+      } else if (requestAccessCode()) {
+        sessionResponse = await createSessionRequest();
+      }
+    }
+
+    const sessionText = await sessionResponse.text();
+    let sessionData: unknown = {};
+    try {
+      sessionData = sessionText ? JSON.parse(sessionText) : {};
+    } catch {
+      sessionData = {};
+    }
+
+    if (!sessionResponse.ok) {
+      throw new Error(getErrorMessage(sessionData, sessionText || `Failed to create ${targetLanguage} session.`));
+    }
+
+    const clientSecret = getClientSecret(sessionData);
+    if (!clientSecret) {
+      throw new Error(`The ${targetLanguage} session response did not include a client secret.`);
+    }
+
+    return clientSecret;
+  }, [getAccessCodeHeaders, requestAccessCode]);
+
+  const connectTranslation = useCallback(
+    async (targetLanguage: TargetLanguage, sourceStream: MediaStream) => {
+      const clientSecret = await createClientSecret(targetLanguage);
+      const pc = new RTCPeerConnection();
+      peerConnectionsRef.current[targetLanguage] = pc;
+
+      pc.onconnectionstatechange = () => {
+        if (peerConnectionsRef.current[targetLanguage] !== pc) return;
+
+        if (pc.connectionState === "connected") {
+          connectedTargetsRef.current.add(targetLanguage);
+          if (connectedTargetsRef.current.size === TARGETS.length) setRealtimeStatus("live");
+          return;
+        }
+
+        if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+          if (statusRef.current === "stopping" || statusRef.current === "idle") return;
+          setError(`${targetLanguage.toUpperCase()} translation connection ended. Click Start to reconnect.`);
+          cleanupRealtime();
+          setRealtimeStatus("error");
+        }
+      };
+
+      const [audioTrack] = sourceStream.getAudioTracks();
+      pc.addTrack(audioTrack, sourceStream);
+
+      const events = pc.createDataChannel(`oai-events-${targetLanguage}`);
+      dataChannelsRef.current[targetLanguage] = events;
+
+      events.onmessage = ({ data }) => {
+        try {
+          const event = JSON.parse(data) as RealtimeEvent;
+
+          if (event.type === "session.output_transcript.delta" && typeof event.delta === "string") {
+            savedCaptionsRef.current[targetLanguage] = appendSavedCaptionDelta(
+              savedCaptionsRef.current[targetLanguage],
+              event.delta
+            );
+            setTranslationCaptions((previous) => ({
+              ...previous,
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, 1600),
+            }));
+            setCaptions((previous) => ({
+              ...previous,
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, 1600),
+            }));
+          }
+
+          if (
+            targetLanguage === INPUT_TRANSCRIPT_TARGET &&
+            event.type === "session.input_transcript.delta" &&
+            typeof event.delta === "string"
+          ) {
+            const inputLanguage = detectInputLanguage(event.delta, lastInputLanguageRef.current);
+            lastInputLanguageRef.current = inputLanguage;
+            setSourceLanguage(inputLanguage);
+            savedCaptionsRef.current[inputLanguage] = appendSavedCaptionDelta(savedCaptionsRef.current[inputLanguage], event.delta);
+            setCaptions((previous) => ({
+              ...previous,
+              [inputLanguage]: appendCaptionDelta(previous[inputLanguage], event.delta as string, 1600),
+            }));
+          }
+
+          if (event.type === "error") {
+            setError(event.error?.message ?? `${targetLanguage.toUpperCase()} Realtime API error.`);
+          }
+        } catch {
+          // Ignore non-JSON data channel messages.
+        }
+      };
+
+      const offer = await pc.createOffer();
+      if (!offer.sdp) {
+        throw new Error("The browser did not create a valid WebRTC offer.");
+      }
+
+      await pc.setLocalDescription(offer);
+
+      const createCallRequest = () =>
+        fetch("/api/call", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/sdp",
+            "x-client-secret": clientSecret,
+            ...getAccessCodeHeaders(),
+          },
+          body: offer.sdp,
+        });
+
+      const accessCodeBeforeRequest = accessCodeRef.current;
+      let sdpResponse = await createCallRequest();
+      if (sdpResponse.status === 401) {
+        if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
+          sdpResponse = await createCallRequest();
+        } else if (requestAccessCode()) {
+          sdpResponse = await createCallRequest();
+        }
+      }
+
+      if (!sdpResponse.ok) {
+        throw new Error(await sdpResponse.text());
+      }
+
+      await pc.setRemoteDescription({
+        type: "answer",
+        sdp: await sdpResponse.text(),
+      });
+    },
+    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, requestAccessCode, setRealtimeStatus]
+  );
+
+  const start = useCallback(async (audioInputId = selectedAudioInputIdRef.current) => {
+    setRealtimeStatus("connecting");
+    setError("");
+    setCaptions({ en: "", zh: "" });
+    setTranslationCaptions({ en: "", zh: "" });
+    setSourceLanguage("en");
+    lastInputLanguageRef.current = "en";
+    savedCaptionsRef.current = { en: "", zh: "" };
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser does not support microphone capture.");
+      }
+
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+
+      if (audioInputId) {
+        audioConstraints.deviceId = { exact: audioInputId };
+      }
+
+      const sourceStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      sourceStreamRef.current = sourceStream;
+      void refreshAudioInputs();
+
+      await Promise.all(TARGETS.map((target) => connectTranslation(target.code, sourceStream)));
+      setRealtimeStatus("live");
+    } catch (caughtError) {
+      stop();
+      setRealtimeStatus("error");
+      setError(caughtError instanceof Error ? caughtError.message : "Unknown error.");
+    }
+  }, [connectTranslation, refreshAudioInputs, setRealtimeStatus, stop]);
+
+  const handleAudioInputChange = useCallback(
+    async (deviceId: string) => {
+      selectedAudioInputIdRef.current = deviceId;
+      setSelectedAudioInputId(deviceId);
+
+      if (statusRef.current !== "live") return;
+
+      cleanupRealtime();
+      await start(deviceId);
+    },
+    [cleanupRealtime, start]
+  );
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      setError("Fullscreen is not available in this browser.");
+    }
+  }, []);
+
+  const handleCaptionFontSizeChange = useCallback((language: TargetLanguage, value: string) => {
+    setCaptionFontSizeInputs((previous) => ({ ...previous, [language]: value }));
+
+    const nextSize = Number(value);
+    if (Number.isFinite(nextSize)) {
+      setCaptionFontSizes((previous) => ({ ...previous, [language]: clampCaptionFontSize(nextSize) }));
+    }
+  }, []);
+
+  const commitCaptionFontSize = useCallback(
+    (language: TargetLanguage) => {
+      setCaptionFontSizeInputs((previous) => ({ ...previous, [language]: String(captionFontSizes[language]) }));
+    },
+    [captionFontSizes]
+  );
+
+  const saveCaptions = useCallback(() => {
+    const savedEnglish = savedCaptionsRef.current.en.trim() || captions.en.trim();
+    const savedChinese = savedCaptionsRef.current.zh.trim() || captions.zh.trim();
+
+    if (!savedEnglish && !savedChinese) {
+      setError("No transcript to save yet.");
+      return;
+    }
+
+    const now = new Date();
+    const content = [
+      "Simple Realtime Translator",
+      `Saved at: ${formatTimestampForText(now)}`,
+      "",
+      "English",
+      savedEnglish || "(empty)",
+      "",
+      "中文",
+      savedChinese || "(empty)",
+      "",
+    ].join("\n");
+
+    const blob = new Blob([`\uFEFF${content}`], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `translation-${formatTimestampForFile(now)}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [captions.en, captions.zh]);
+
+  const isRunning = status === "connecting" || status === "live" || status === "stopping";
+  const singleTargetLanguage: TargetLanguage = sourceLanguage === "zh" ? "en" : "zh";
+  const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
+  const singleCaption = translationCaptions[singleTargetLanguage] || "等待翻译 Waiting translate";
+  const captionStyle: CaptionFontStyle = {
+    "--caption-font-size-en": `${captionFontSizes.en}px`,
+    "--caption-font-size-zh": `${captionFontSizes.zh}px`,
+    "--watermark-image": WATERMARK_IMAGE,
+  };
+
+  return (
+    <main className="meeting-shell" style={captionStyle}>
+      <header className="control-strip" aria-label="Translation controls">
+        <div className="status-chip">
+          <span className={`status-dot ${status}`} />
+          <span>
+            {status === "idle" && "Ready"}
+            {status === "connecting" && "Connecting"}
+            {status === "live" && "Live"}
+            {status === "stopping" && "Stopping"}
+            {status === "error" && "Error"}
+          </span>
+        </div>
+
+        <label className="device-control" title="Audio input source">
+          <span>Input</span>
+          <select
+            className="device-select"
+            disabled={status === "connecting" || status === "stopping"}
+            onChange={(event) => void handleAudioInputChange(event.currentTarget.value)}
+            value={selectedAudioInputId}
+          >
+            <option value="">Default microphone</option>
+            {audioInputs.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <button className="tiny-button" onClick={() => void refreshAudioInputs()} title="Refresh audio inputs" type="button">
+          Scan
+        </button>
+
+        <button className="tiny-button" onClick={saveCaptions} title="Save captions as a local text file" type="button">
+          Save
+        </button>
+
+        <button
+          aria-pressed={displayMode === "dual"}
+          className={`tiny-button mode-button ${displayMode === "dual" ? "mode-active" : ""}`}
+          onClick={() => setDisplayMode("dual")}
+          title="Show English and Chinese captions together"
+          type="button"
+        >
+          Split View
+        </button>
+
+        <button
+          aria-pressed={displayMode === "single"}
+          className={`tiny-button mode-button ${displayMode === "single" ? "mode-active" : ""}`}
+          onClick={() => setDisplayMode("single")}
+          title="Show one focused translation based on the spoken language"
+          type="button"
+        >
+          Focus View
+        </button>
+
+        <label className="font-control" title="English caption font size">
+          <span>EN</span>
+          <input
+            aria-label="English caption font size"
+            className="font-input"
+            inputMode="numeric"
+            max={MAX_CAPTION_FONT_SIZE}
+            min={MIN_CAPTION_FONT_SIZE}
+            onBlur={() => commitCaptionFontSize("en")}
+            onChange={(event) => handleCaptionFontSizeChange("en", event.currentTarget.value)}
+            type="number"
+            value={captionFontSizeInputs.en}
+          />
+        </label>
+
+        <label className="font-control" title="Chinese caption font size">
+          <span>中文</span>
+          <input
+            aria-label="Chinese caption font size"
+            className="font-input"
+            inputMode="numeric"
+            max={MAX_CAPTION_FONT_SIZE}
+            min={MIN_CAPTION_FONT_SIZE}
+            onBlur={() => commitCaptionFontSize("zh")}
+            onChange={(event) => handleCaptionFontSizeChange("zh", event.currentTarget.value)}
+            type="number"
+            value={captionFontSizeInputs.zh}
+          />
+        </label>
+
+        <button className="tiny-button" onClick={toggleFullscreen} title="Toggle fullscreen" type="button">
+          FS
+        </button>
+
+        <button
+          className={isRunning ? "tiny-button danger" : "tiny-button primary"}
+          onClick={isRunning ? stop : () => void start()}
+          type="button"
+        >
+          {isRunning ? "Stop" : "Start"}
+        </button>
+      </header>
+
+      <section className={displayMode === "dual" ? "dual-caption-stage" : "single-caption-stage"} aria-live="polite">
+        {displayMode === "dual" ? (
+          TARGETS.map((target) => (
+            <article className={`caption-panel caption-panel-${target.code}`} key={target.code}>
+              <div className="caption-header">
+                <span>{target.label}</span>
+              </div>
+              <div
+                className="caption-scroll"
+                ref={(element) => {
+                  if (element) {
+                    captionScrollerRefs.current[target.code] = element;
+                  } else {
+                    delete captionScrollerRefs.current[target.code];
+                  }
+                }}
+              >
+                <p>{captions[target.code] || target.placeholder}</p>
+              </div>
+            </article>
+          ))
+        ) : (
+          <article className={`caption-panel caption-panel-${singleTargetLanguage} single-caption-panel`}>
+            <div className="caption-header">
+              <span>{singleTarget.label}</span>
+            </div>
+            <div
+              className="caption-scroll single-caption-scroll"
+              ref={(element) => {
+                if (element) {
+                  captionScrollerRefs.current[singleTargetLanguage] = element;
+                } else {
+                  delete captionScrollerRefs.current[singleTargetLanguage];
+                }
+              }}
+            >
+              <p>{singleCaption}</p>
+            </div>
+          </article>
+        )}
+
+        {error ? <div className="error-banner">{error}</div> : null}
+      </section>
+    </main>
+  );
+}

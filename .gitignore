@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# local environment
+.env
+.env.*
+!.env.example
+
+# deployment/local tooling
+.vercel/
+.vercel-deploy.log
+
+# local presentation assets
+public/watermark.*
+public/*logo*
+
+# generated files
+*.tsbuildinfo
+*.log
+
+# system files
+.DS_Store
+Thumbs.db
