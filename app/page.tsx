@@ -44,6 +44,13 @@ type RealtimeEvent = {
   error?: { message?: string };
   [key: string]: unknown;
 };
+type SourceLanguageSwitchCandidate = {
+  language: TargetLanguage;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  chunks: number;
+  evidence: number;
+};
 
 const TARGETS: Array<{ code: TargetLanguage; label: string; placeholder: string }> = [
   { code: "en", label: "English", placeholder: "Waiting for English captions" },
@@ -53,6 +60,10 @@ const INPUT_TRANSCRIPT_TARGET: TargetLanguage = "zh";
 const DEFAULT_CAPTION_FONT_SIZES: CaptionFontSizeMap = { en: 60, zh: 70 };
 const MIN_CAPTION_FONT_SIZE = 24;
 const MAX_CAPTION_FONT_SIZE = 180;
+const SOURCE_LANGUAGE_SWITCH_DELAY_MS = 2500;
+const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
+const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
+const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en: 12, zh: 3 };
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const FLOATING_WINDOW_WIDTH = 720;
 const FLOATING_WINDOW_HEIGHT = 360;
@@ -268,6 +279,14 @@ function detectInputLanguage(delta: string, fallback: TargetLanguage): TargetLan
   return fallback;
 }
 
+function getInputLanguageEvidence(delta: string, language: TargetLanguage) {
+  if (language === "zh") {
+    return delta.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  }
+
+  return delta.match(/[A-Za-z]/g)?.length ?? 0;
+}
+
 function formatTimestampForFile(date: Date) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(
@@ -347,6 +366,9 @@ export default function Home() {
   const connectedTargetsRef = useRef<Set<TargetLanguage>>(new Set());
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const floatingWindowRef = useRef<Window | null>(null);
+  const sourceLanguageRef = useRef<TargetLanguage>("en");
+  const sourceLanguageConfirmedRef = useRef(false);
+  const sourceLanguageSwitchCandidateRef = useRef<SourceLanguageSwitchCandidate | null>(null);
   const lastInputLanguageRef = useRef<TargetLanguage>("en");
   const savedCaptionsRef = useRef<CaptionMap>({ en: "", zh: "" });
 
@@ -378,6 +400,65 @@ export default function Home() {
   const getAccessCodeHeaders = useCallback((): Record<string, string> => {
     return accessCodeRef.current ? { "x-access-code": accessCodeRef.current } : {};
   }, []);
+
+  const commitSourceLanguage = useCallback((language: TargetLanguage) => {
+    sourceLanguageRef.current = language;
+    sourceLanguageConfirmedRef.current = true;
+    sourceLanguageSwitchCandidateRef.current = null;
+    setSourceLanguage(language);
+  }, []);
+
+  const trackSourceLanguage = useCallback(
+    (inputLanguage: TargetLanguage, delta: string) => {
+      const evidence = getInputLanguageEvidence(delta, inputLanguage);
+      if (evidence <= 0) return;
+
+      const committedLanguage = sourceLanguageRef.current;
+      if (!sourceLanguageConfirmedRef.current) {
+        commitSourceLanguage(inputLanguage);
+        return;
+      }
+
+      if (inputLanguage === committedLanguage) {
+        sourceLanguageSwitchCandidateRef.current = null;
+        return;
+      }
+
+      const now = Date.now();
+      const pending = sourceLanguageSwitchCandidateRef.current;
+      const shouldStartCandidate =
+        !pending ||
+        pending.language !== inputLanguage ||
+        now - pending.lastSeenAt > SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS;
+
+      const candidate: SourceLanguageSwitchCandidate = shouldStartCandidate
+        ? {
+            language: inputLanguage,
+            firstSeenAt: now,
+            lastSeenAt: now,
+            chunks: 1,
+            evidence,
+          }
+        : {
+            ...pending,
+            lastSeenAt: now,
+            chunks: pending.chunks + 1,
+            evidence: pending.evidence + evidence,
+          };
+
+      sourceLanguageSwitchCandidateRef.current = candidate;
+
+      const hasStayedLongEnough = now - candidate.firstSeenAt >= SOURCE_LANGUAGE_SWITCH_DELAY_MS;
+      const hasEnoughEvidence =
+        candidate.chunks >= SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS &&
+        candidate.evidence >= SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE[candidate.language];
+
+      if (hasStayedLongEnough && hasEnoughEvidence) {
+        commitSourceLanguage(candidate.language);
+      }
+    },
+    [commitSourceLanguage]
+  );
 
   const requestAccessCode = useCallback(() => {
     const accessCode = window.prompt("Access code");
@@ -546,7 +627,7 @@ export default function Home() {
           ) {
             const inputLanguage = detectInputLanguage(event.delta, lastInputLanguageRef.current);
             lastInputLanguageRef.current = inputLanguage;
-            setSourceLanguage(inputLanguage);
+            trackSourceLanguage(inputLanguage, event.delta);
             savedCaptionsRef.current[inputLanguage] = appendSavedCaptionDelta(savedCaptionsRef.current[inputLanguage], event.delta);
             setCaptions((previous) => ({
               ...previous,
@@ -599,7 +680,7 @@ export default function Home() {
         sdp: await sdpResponse.text(),
       });
     },
-    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, requestAccessCode, setRealtimeStatus]
+    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, requestAccessCode, setRealtimeStatus, trackSourceLanguage]
   );
 
   const start = useCallback(async (audioInputId = selectedAudioInputIdRef.current) => {
@@ -608,6 +689,9 @@ export default function Home() {
     setCaptions({ en: "", zh: "" });
     setTranslationCaptions({ en: "", zh: "" });
     setSourceLanguage("en");
+    sourceLanguageRef.current = "en";
+    sourceLanguageConfirmedRef.current = false;
+    sourceLanguageSwitchCandidateRef.current = null;
     lastInputLanguageRef.current = "en";
     savedCaptionsRef.current = { en: "", zh: "" };
 
