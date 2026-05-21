@@ -232,6 +232,7 @@ const FLOATING_WINDOW_CSS = `
 
   .floating-caption-card-zh p {
     font-size: clamp(30px, 11vw, var(--floating-font-size-zh));
+    line-height: 1.18;
   }
 
   .floating-caption-card-focus p {
@@ -1283,22 +1284,23 @@ export default function Home() {
           </span>
         </div>
 
-        <label className="provider-control" title="API provider">
-          <span>Provider</span>
-          <select
-            aria-label="API provider"
-            className="provider-select"
-            disabled={isRunning}
-            onChange={(event) => handleApiProviderChange(event.currentTarget.value)}
-            value={apiProvider}
-          >
+        <div className="switch-control" title="API provider">
+          <span className="switch-label">Provider</span>
+          <div aria-label="API provider" className="segmented-switch" role="group">
             {API_PROVIDERS.map((provider) => (
-              <option key={provider.code} value={provider.code}>
+              <button
+                aria-pressed={apiProvider === provider.code}
+                className={`switch-option ${apiProvider === provider.code ? "switch-option-active" : ""}`}
+                disabled={isRunning}
+                key={provider.code}
+                onClick={() => handleApiProviderChange(provider.code)}
+                type="button"
+              >
                 {provider.label}
-              </option>
+              </button>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
 
         <label className="api-key-control" title={apiKeyLabel}>
           <span>API</span>
@@ -1345,25 +1347,26 @@ export default function Home() {
           Save
         </button>
 
-        <button
-          aria-pressed={displayMode === "dual"}
-          className={`tiny-button mode-button ${displayMode === "dual" ? "mode-active" : ""}`}
-          onClick={() => setDisplayMode("dual")}
-          title="Show English and Chinese captions together"
-          type="button"
-        >
-          Split View
-        </button>
-
-        <button
-          aria-pressed={displayMode === "single"}
-          className={`tiny-button mode-button ${displayMode === "single" ? "mode-active" : ""}`}
-          onClick={() => setDisplayMode("single")}
-          title="Show one focused translation based on the spoken language"
-          type="button"
-        >
-          Focus View
-        </button>
+        <div className="segmented-switch view-switch" role="group" aria-label="Caption view">
+          <button
+            aria-pressed={displayMode === "dual"}
+            className={`switch-option ${displayMode === "dual" ? "switch-option-active" : ""}`}
+            onClick={() => setDisplayMode("dual")}
+            title="Show English and Chinese captions together"
+            type="button"
+          >
+            Split View
+          </button>
+          <button
+            aria-pressed={displayMode === "single"}
+            className={`switch-option ${displayMode === "single" ? "switch-option-active" : ""}`}
+            onClick={() => setDisplayMode("single")}
+            title="Show one focused translation based on the spoken language"
+            type="button"
+          >
+            Focus View
+          </button>
+        </div>
 
         <button
           aria-pressed={floatingWindowOpen}

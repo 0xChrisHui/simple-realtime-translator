@@ -87,7 +87,7 @@ select {
   padding: 0 10px;
 }
 
-.provider-control,
+.switch-control,
 .device-control {
   align-items: center;
   background: var(--surface);
@@ -103,27 +103,71 @@ select {
   text-transform: uppercase;
 }
 
-.provider-select {
+.switch-label {
+  white-space: nowrap;
+}
+
+.segmented-switch {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 2px;
+  height: 30px;
+  padding: 2px;
+}
+
+.switch-control .segmented-switch {
+  border: 0;
+  height: 26px;
+  margin-right: -4px;
+  padding: 1px;
+}
+
+.switch-option {
+  align-items: center;
   background: transparent;
   border: 0;
-  color: var(--muted);
+  border-radius: 6px;
+  color: var(--faint);
   cursor: pointer;
-  font-size: 0.78rem;
-  font-weight: 750;
-  height: 28px;
-  min-width: 84px;
-  outline: none;
+  display: inline-flex;
+  font-size: 0.74rem;
+  font-weight: 850;
+  height: 24px;
+  justify-content: center;
+  letter-spacing: 0;
+  min-width: 62px;
+  padding: 0 9px;
   text-transform: none;
 }
 
-.provider-select:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
+.switch-option:hover:not(:disabled),
+.switch-option:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  outline: none;
 }
 
-.provider-select option {
-  background: #111111;
-  color: #ffffff;
+.switch-option-active {
+  background: var(--primary);
+  color: var(--primary-text);
+}
+
+.switch-option-active:hover:not(:disabled),
+.switch-option-active:focus-visible {
+  background: var(--primary);
+  color: var(--primary-text);
+}
+
+.switch-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.view-switch .switch-option {
+  min-width: 82px;
 }
 
 .api-key-control {
@@ -276,10 +320,6 @@ select {
   color: var(--text);
 }
 
-.tiny-button.mode-button {
-  min-width: 88px;
-}
-
 .tiny-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -403,6 +443,7 @@ select {
 
 .caption-panel-zh p {
   font-size: var(--caption-font-size-zh);
+  line-height: 1.2;
 }
 
 .error-banner {
