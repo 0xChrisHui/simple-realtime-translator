@@ -13,6 +13,7 @@ The app is designed for an in-person meeting setup: a laptop captures speech, th
 - Manual audio input selection for microphones or system-provided audio devices
 - Adjustable English and Chinese caption font sizes
 - Local one-click transcript export
+- User-provided OpenAI API key from the browser, with a server environment fallback
 - Optional public-screen watermark through `NEXT_PUBLIC_WATERMARK_IMAGE`
 - Optional access code protection for Vercel deployments
 
@@ -43,7 +44,7 @@ ACCESS_CODE=optional-shared-password
 NEXT_PUBLIC_WATERMARK_IMAGE=/watermark.png
 ```
 
-`OPENAI_API_KEY` is required. `ACCESS_CODE` is optional locally, but recommended for public deployments so random visitors cannot spend your OpenAI API quota.
+Users can enter their own OpenAI API key in the app. `OPENAI_API_KEY` is optional as a server-side fallback when the browser does not provide a key. `ACCESS_CODE` is optional locally, but recommended for public deployments so random visitors cannot spend your OpenAI API quota.
 
 `NEXT_PUBLIC_WATERMARK_IMAGE` is optional. Leave it empty for no watermark, or point it at a public URL or a local file in `public/`.
 
@@ -58,7 +59,7 @@ ACCESS_CODE=shared-password-for-users
 NEXT_PUBLIC_WATERMARK_IMAGE=https://example.com/watermark.png
 ```
 
-Then deploy the project from GitHub or with the Vercel CLI.
+Then deploy the project from GitHub or with the Vercel CLI. If you want every user to bring their own key, leave `OPENAI_API_KEY` unset and keep `ACCESS_CODE` only if the deployment should remain private.
 
 ## How It Works
 

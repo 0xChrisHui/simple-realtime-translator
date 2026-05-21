@@ -5,6 +5,7 @@ import { denyWithoutAccessCode, noStoreHeaders } from "../_shared/access";
 export const runtime = "nodejs";
 
 type SessionRequest = {
+  openaiApiKey?: string;
   targetLanguage?: string;
 };
 
@@ -31,20 +32,21 @@ export async function POST(request: NextRequest) {
   const accessDenied = denyWithoutAccessCode(request);
   if (accessDenied) return accessDenied;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "Missing OPENAI_API_KEY. Add it in Vercel Project Settings > Environment Variables." },
-      { status: 500, headers: noStoreHeaders }
-    );
-  }
-
   let body: SessionRequest = {};
   try {
     body = await request.json();
   } catch {
     body = {};
+  }
+
+  const requestApiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey.trim() : "";
+  const apiKey = requestApiKey || process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Enter an OpenAI API key in the app, or set OPENAI_API_KEY on the server." },
+      { status: 400, headers: noStoreHeaders }
+    );
   }
 
   const targetLanguage = body.targetLanguage ?? "zh";

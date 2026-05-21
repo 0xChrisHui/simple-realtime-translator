@@ -65,6 +65,7 @@ const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
 const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
 const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en: 12, zh: 3 };
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
+const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const FLOATING_WINDOW_WIDTH = 720;
 const FLOATING_WINDOW_HEIGHT = 360;
 const FLOATING_CAPTION_MAX_CHARS = 420;
@@ -354,11 +355,13 @@ export default function Home() {
     en: String(DEFAULT_CAPTION_FONT_SIZES.en),
     zh: String(DEFAULT_CAPTION_FONT_SIZES.zh),
   });
+  const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [floatingContainer, setFloatingContainer] = useState<HTMLElement | null>(null);
   const [floatingWindowOpen, setFloatingWindowOpen] = useState(false);
 
   const statusRef = useRef<Status>("idle");
   const accessCodeRef = useRef("");
+  const openaiApiKeyRef = useRef("");
   const selectedAudioInputIdRef = useRef("");
   const sourceStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Partial<Record<TargetLanguage, RTCPeerConnection>>>({});
@@ -397,8 +400,34 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    try {
+      const storedApiKey = window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? "";
+      openaiApiKeyRef.current = storedApiKey;
+      setOpenaiApiKey(storedApiKey);
+    } catch {
+      openaiApiKeyRef.current = "";
+    }
+  }, []);
+
   const getAccessCodeHeaders = useCallback((): Record<string, string> => {
     return accessCodeRef.current ? { "x-access-code": accessCodeRef.current } : {};
+  }, []);
+
+  const handleOpenAiApiKeyChange = useCallback((value: string) => {
+    const nextApiKey = value.trim();
+    openaiApiKeyRef.current = nextApiKey;
+    setOpenaiApiKey(nextApiKey);
+
+    try {
+      if (nextApiKey) {
+        window.localStorage.setItem(OPENAI_API_KEY_STORAGE_KEY, nextApiKey);
+      } else {
+        window.localStorage.removeItem(OPENAI_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // The key still works for this tab even when local storage is unavailable.
+    }
   }, []);
 
   const commitSourceLanguage = useCallback((language: TargetLanguage) => {
@@ -539,7 +568,7 @@ export default function Home() {
       fetch("/api/session", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
-        body: JSON.stringify({ targetLanguage }),
+        body: JSON.stringify({ targetLanguage, openaiApiKey: openaiApiKeyRef.current || undefined }),
       });
 
     const accessCodeBeforeRequest = accessCodeRef.current;
@@ -891,6 +920,22 @@ export default function Home() {
             {status === "error" && "Error"}
           </span>
         </div>
+
+        <label className="api-key-control" title="OpenAI API key">
+          <span>API</span>
+          <input
+            aria-label="OpenAI API key"
+            autoCapitalize="none"
+            autoComplete="off"
+            className="api-key-input"
+            disabled={isRunning}
+            onChange={(event) => handleOpenAiApiKeyChange(event.currentTarget.value)}
+            placeholder="OpenAI key"
+            spellCheck={false}
+            type="password"
+            value={openaiApiKey}
+          />
+        </label>
 
         <label className="device-control" title="Audio input source">
           <span>Input</span>
