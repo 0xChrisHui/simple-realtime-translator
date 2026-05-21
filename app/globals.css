@@ -265,7 +265,7 @@ select {
   bottom: 10px;
   display: flex;
   gap: 8px;
-  opacity: 0.34;
+  opacity: 0.32;
   position: fixed;
   right: 10px;
   transition: opacity 0.16s ease;
@@ -273,7 +273,8 @@ select {
 }
 
 .font-dock:hover,
-.font-dock:focus-within {
+.font-dock:focus-within,
+.font-dock-awake {
   opacity: 1;
 }
 

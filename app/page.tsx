@@ -86,7 +86,6 @@ const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
 const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
 const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en: 12, zh: 3 };
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
-const API_PROVIDER_STORAGE_KEY = "translatorApiProvider";
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
 const FLOATING_WINDOW_WIDTH = 720;
@@ -431,7 +430,7 @@ export default function Home() {
   const [captions, setCaptions] = useState<CaptionMap>({ en: "", zh: "" });
   const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>({ en: "", zh: "" });
   const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("single");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("dual");
   const [error, setError] = useState("");
   const [audioInputs, setAudioInputs] = useState<AudioInputDevice[]>([]);
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
@@ -440,14 +439,15 @@ export default function Home() {
     en: String(DEFAULT_CAPTION_FONT_SIZES.en),
     zh: String(DEFAULT_CAPTION_FONT_SIZES.zh),
   });
-  const [apiProvider, setApiProvider] = useState<ApiProvider>("openai");
+  const [apiProvider, setApiProvider] = useState<ApiProvider>("soniox");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [sonioxApiKey, setSonioxApiKey] = useState("");
+  const [controlsAwake, setControlsAwake] = useState(false);
   const [floatingContainer, setFloatingContainer] = useState<HTMLElement | null>(null);
   const [floatingWindowOpen, setFloatingWindowOpen] = useState(false);
 
   const statusRef = useRef<Status>("idle");
-  const apiProviderRef = useRef<ApiProvider>("openai");
+  const apiProviderRef = useRef<ApiProvider>("soniox");
   const openaiApiKeyRef = useRef("");
   const sonioxApiKeyRef = useRef("");
   const selectedAudioInputIdRef = useRef("");
@@ -485,17 +485,6 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const storedProvider = window.localStorage.getItem(API_PROVIDER_STORAGE_KEY);
-      const nextProvider: ApiProvider = storedProvider === "soniox" ? "soniox" : "openai";
-      apiProviderRef.current = nextProvider;
-      setApiProvider(nextProvider);
-    } catch {
-      apiProviderRef.current = "openai";
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
       const storedApiKey = window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? "";
       openaiApiKeyRef.current = storedApiKey;
       setOpenaiApiKey(storedApiKey);
@@ -524,13 +513,8 @@ export default function Home() {
     const nextProvider: ApiProvider = value === "soniox" ? "soniox" : "openai";
     apiProviderRef.current = nextProvider;
     setApiProvider(nextProvider);
+    setDisplayMode(nextProvider === "openai" ? "single" : "dual");
     setError("");
-
-    try {
-      window.localStorage.setItem(API_PROVIDER_STORAGE_KEY, nextProvider);
-    } catch {
-      // The provider selection still works for this tab even when local storage is unavailable.
-    }
   }, []);
 
   const handleOpenAiApiKeyChange = useCallback((value: string) => {
@@ -1240,7 +1224,16 @@ export default function Home() {
   return (
     <>
       <main className="meeting-shell" style={captionStyle}>
-      <header className="control-strip" aria-label="Translation controls">
+        <header
+          className="control-strip"
+          aria-label="Translation controls"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) setControlsAwake(false);
+          }}
+          onFocus={() => setControlsAwake(true)}
+          onMouseEnter={() => setControlsAwake(true)}
+          onMouseLeave={() => setControlsAwake(false)}
+        >
         <div className="status-chip">
           <span className={`status-dot ${status}`} />
           <span>
@@ -1403,7 +1396,7 @@ export default function Home() {
         {error ? <div className="error-banner">{error}</div> : null}
       </section>
 
-      <div className="font-dock" aria-label="Caption font size controls">
+      <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption font size controls">
         <label className="font-control" title="English caption font size">
           <span>EN</span>
           <input
