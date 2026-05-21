@@ -87,6 +87,7 @@ select {
   padding: 0 10px;
 }
 
+.provider-control,
 .device-control {
   align-items: center;
   background: var(--surface);
@@ -100,6 +101,29 @@ select {
   height: 30px;
   padding: 0 8px;
   text-transform: uppercase;
+}
+
+.provider-select {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+  height: 28px;
+  min-width: 84px;
+  outline: none;
+  text-transform: none;
+}
+
+.provider-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.provider-select option {
+  background: #111111;
+  color: #ffffff;
 }
 
 .api-key-control {

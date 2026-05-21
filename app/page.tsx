@@ -1,10 +1,19 @@
 "use client";
 
+import {
+  MicrophoneSource,
+  SonioxClient,
+  type RealtimeResult as SonioxRealtimeResult,
+  type RealtimeToken as SonioxRealtimeToken,
+  type Recording as SonioxRecording,
+  type SonioxConnectionConfig,
+} from "@soniox/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 type Status = "idle" | "connecting" | "live" | "stopping" | "error";
+type ApiProvider = "openai" | "soniox";
 type TargetLanguage = "en" | "zh";
 type CaptionMap = Record<TargetLanguage, string>;
 type DisplayMode = "dual" | "single";
@@ -51,7 +60,19 @@ type SourceLanguageSwitchCandidate = {
   chunks: number;
   evidence: number;
 };
+type SonioxCaptionBuffer = {
+  finalDisplay: CaptionMap;
+  partialDisplay: CaptionMap;
+  finalOriginal: CaptionMap;
+  partialOriginal: CaptionMap;
+  finalTranslation: CaptionMap;
+  partialTranslation: CaptionMap;
+};
 
+const API_PROVIDERS: Array<{ code: ApiProvider; label: string }> = [
+  { code: "openai", label: "OpenAI" },
+  { code: "soniox", label: "Soniox" },
+];
 const TARGETS: Array<{ code: TargetLanguage; label: string; placeholder: string }> = [
   { code: "en", label: "English", placeholder: "Waiting for English captions" },
   { code: "zh", label: "中文", placeholder: "等待中文字幕" },
@@ -65,7 +86,9 @@ const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
 const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
 const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en: 12, zh: 3 };
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
+const API_PROVIDER_STORAGE_KEY = "translatorApiProvider";
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
+const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
 const FLOATING_WINDOW_WIDTH = 720;
 const FLOATING_WINDOW_HEIGHT = 360;
 const FLOATING_CAPTION_MAX_CHARS = 420;
@@ -274,6 +297,67 @@ function appendSavedCaptionDelta(previous: string, delta: string) {
   return `${previous}${delta}`.replace(/[ \t\r\n]+/g, " ").trimStart();
 }
 
+function createEmptyCaptionMap(): CaptionMap {
+  return { en: "", zh: "" };
+}
+
+function createEmptySonioxCaptionBuffer(): SonioxCaptionBuffer {
+  return {
+    finalDisplay: createEmptyCaptionMap(),
+    partialDisplay: createEmptyCaptionMap(),
+    finalOriginal: createEmptyCaptionMap(),
+    partialOriginal: createEmptyCaptionMap(),
+    finalTranslation: createEmptyCaptionMap(),
+    partialTranslation: createEmptyCaptionMap(),
+  };
+}
+
+function normalizeSonioxLanguage(language: string | undefined): TargetLanguage | null {
+  const normalized = language?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "en" || normalized.startsWith("en-")) return "en";
+  if (normalized === "zh" || normalized.startsWith("zh-") || normalized === "cmn" || normalized === "yue") return "zh";
+  return null;
+}
+
+function appendSonioxCaptionText(previous: string, text: string) {
+  return appendCaptionDelta(previous, text, 1600);
+}
+
+function combineSonioxCaption(finalText: string, partialText: string) {
+  return appendCaptionDelta(finalText, partialText, 1600);
+}
+
+function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer) {
+  const captions: CaptionMap = {
+    en: combineSonioxCaption(buffer.finalDisplay.en, buffer.partialDisplay.en),
+    zh: combineSonioxCaption(buffer.finalDisplay.zh, buffer.partialDisplay.zh),
+  };
+  const translationCaptions: CaptionMap = {
+    en: combineSonioxCaption(buffer.finalTranslation.en, buffer.partialTranslation.en),
+    zh: combineSonioxCaption(buffer.finalTranslation.zh, buffer.partialTranslation.zh),
+  };
+
+  return { captions, translationCaptions };
+}
+
+function getSonioxFinalTokenKey(
+  token: SonioxRealtimeToken,
+  status: "original" | "translation",
+  language: TargetLanguage,
+  result: SonioxRealtimeResult,
+  tokenIndex: number
+) {
+  return [
+    status,
+    language,
+    token.source_language ?? "",
+    token.start_ms ?? `final:${result.final_audio_proc_ms}`,
+    token.end_ms ?? `index:${tokenIndex}`,
+    token.text,
+  ].join(":");
+}
+
 function detectInputLanguage(delta: string, fallback: TargetLanguage): TargetLanguage {
   if (/[\u3400-\u9fff]/.test(delta)) return "zh";
   if (/[A-Za-z]/.test(delta)) return "en";
@@ -355,18 +439,25 @@ export default function Home() {
     en: String(DEFAULT_CAPTION_FONT_SIZES.en),
     zh: String(DEFAULT_CAPTION_FONT_SIZES.zh),
   });
+  const [apiProvider, setApiProvider] = useState<ApiProvider>("openai");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
+  const [sonioxApiKey, setSonioxApiKey] = useState("");
   const [floatingContainer, setFloatingContainer] = useState<HTMLElement | null>(null);
   const [floatingWindowOpen, setFloatingWindowOpen] = useState(false);
 
   const statusRef = useRef<Status>("idle");
+  const apiProviderRef = useRef<ApiProvider>("openai");
   const accessCodeRef = useRef("");
   const openaiApiKeyRef = useRef("");
+  const sonioxApiKeyRef = useRef("");
   const selectedAudioInputIdRef = useRef("");
   const sourceStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Partial<Record<TargetLanguage, RTCPeerConnection>>>({});
   const dataChannelsRef = useRef<Partial<Record<TargetLanguage, RTCDataChannel>>>({});
   const connectedTargetsRef = useRef<Set<TargetLanguage>>(new Set());
+  const sonioxRecordingRef = useRef<SonioxRecording | null>(null);
+  const sonioxCaptionBufferRef = useRef<SonioxCaptionBuffer>(createEmptySonioxCaptionBuffer());
+  const sonioxFinalTokenKeysRef = useRef<Set<string>>(new Set());
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const floatingWindowRef = useRef<Window | null>(null);
   const sourceLanguageRef = useRef<TargetLanguage>("en");
@@ -402,6 +493,17 @@ export default function Home() {
 
   useEffect(() => {
     try {
+      const storedProvider = window.localStorage.getItem(API_PROVIDER_STORAGE_KEY);
+      const nextProvider: ApiProvider = storedProvider === "soniox" ? "soniox" : "openai";
+      apiProviderRef.current = nextProvider;
+      setApiProvider(nextProvider);
+    } catch {
+      apiProviderRef.current = "openai";
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
       const storedApiKey = window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY) ?? "";
       openaiApiKeyRef.current = storedApiKey;
       setOpenaiApiKey(storedApiKey);
@@ -410,8 +512,33 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    try {
+      const storedApiKey = window.localStorage.getItem(SONIOX_API_KEY_STORAGE_KEY) ?? "";
+      sonioxApiKeyRef.current = storedApiKey;
+      setSonioxApiKey(storedApiKey);
+    } catch {
+      sonioxApiKeyRef.current = "";
+    }
+  }, []);
+
   const getAccessCodeHeaders = useCallback((): Record<string, string> => {
     return accessCodeRef.current ? { "x-access-code": accessCodeRef.current } : {};
+  }, []);
+
+  const handleApiProviderChange = useCallback((value: string) => {
+    if (statusRef.current !== "idle" && statusRef.current !== "error") return;
+
+    const nextProvider: ApiProvider = value === "soniox" ? "soniox" : "openai";
+    apiProviderRef.current = nextProvider;
+    setApiProvider(nextProvider);
+    setError("");
+
+    try {
+      window.localStorage.setItem(API_PROVIDER_STORAGE_KEY, nextProvider);
+    } catch {
+      // The provider selection still works for this tab even when local storage is unavailable.
+    }
   }, []);
 
   const handleOpenAiApiKeyChange = useCallback((value: string) => {
@@ -424,6 +551,22 @@ export default function Home() {
         window.localStorage.setItem(OPENAI_API_KEY_STORAGE_KEY, nextApiKey);
       } else {
         window.localStorage.removeItem(OPENAI_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // The key still works for this tab even when local storage is unavailable.
+    }
+  }, []);
+
+  const handleSonioxApiKeyChange = useCallback((value: string) => {
+    const nextApiKey = value.trim();
+    sonioxApiKeyRef.current = nextApiKey;
+    setSonioxApiKey(nextApiKey);
+
+    try {
+      if (nextApiKey) {
+        window.localStorage.setItem(SONIOX_API_KEY_STORAGE_KEY, nextApiKey);
+      } else {
+        window.localStorage.removeItem(SONIOX_API_KEY_STORAGE_KEY);
       }
     } catch {
       // The key still works for this tab even when local storage is unavailable.
@@ -540,7 +683,15 @@ export default function Home() {
     return () => navigator.mediaDevices.removeEventListener("devicechange", refreshAudioInputs);
   }, [refreshAudioInputs]);
 
+  const cancelSonioxRecording = useCallback(() => {
+    const recording = sonioxRecordingRef.current;
+    sonioxRecordingRef.current = null;
+    recording?.cancel();
+  }, []);
+
   const cleanupRealtime = useCallback(() => {
+    cancelSonioxRecording();
+
     Object.values(dataChannelsRef.current).forEach((channel) => channel?.close());
     dataChannelsRef.current = {};
 
@@ -555,10 +706,24 @@ export default function Home() {
     const sourceStream = sourceStreamRef.current;
     sourceStreamRef.current = null;
     sourceStream?.getTracks().forEach((track) => track.stop());
-  }, []);
+  }, [cancelSonioxRecording]);
 
-  const stop = useCallback(() => {
+  const stop = useCallback(async () => {
     if (statusRef.current !== "idle") setRealtimeStatus("stopping");
+    const recording = sonioxRecordingRef.current;
+
+    if (recording) {
+      try {
+        await recording.stop();
+      } catch (caughtError) {
+        setError(caughtError instanceof Error ? caughtError.message : "Could not stop Soniox recording cleanly.");
+      }
+
+      if (sonioxRecordingRef.current === recording) {
+        sonioxRecordingRef.current = null;
+      }
+    }
+
     cleanupRealtime();
     setRealtimeStatus("idle");
   }, [cleanupRealtime, setRealtimeStatus]);
@@ -712,9 +877,7 @@ export default function Home() {
     [cleanupRealtime, createClientSecret, getAccessCodeHeaders, requestAccessCode, setRealtimeStatus, trackSourceLanguage]
   );
 
-  const start = useCallback(async (audioInputId = selectedAudioInputIdRef.current) => {
-    setRealtimeStatus("connecting");
-    setError("");
+  const resetCaptionState = useCallback(() => {
     setCaptions({ en: "", zh: "" });
     setTranslationCaptions({ en: "", zh: "" });
     setSourceLanguage("en");
@@ -723,8 +886,12 @@ export default function Home() {
     sourceLanguageSwitchCandidateRef.current = null;
     lastInputLanguageRef.current = "en";
     savedCaptionsRef.current = { en: "", zh: "" };
+    sonioxCaptionBufferRef.current = createEmptySonioxCaptionBuffer();
+    sonioxFinalTokenKeysRef.current = new Set();
+  }, []);
 
-    try {
+  const startOpenAiTranslation = useCallback(
+    async (audioInputId?: string) => {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser does not support microphone capture.");
       }
@@ -745,12 +912,203 @@ export default function Home() {
 
       await Promise.all(TARGETS.map((target) => connectTranslation(target.code, sourceStream)));
       setRealtimeStatus("live");
+    },
+    [connectTranslation, refreshAudioInputs, setRealtimeStatus]
+  );
+
+  const createSonioxConnectionConfig = useCallback(async (): Promise<SonioxConnectionConfig> => {
+    const createConfigRequest = () =>
+      fetch("/api/soniox/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
+        body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
+      });
+
+    const accessCodeBeforeRequest = accessCodeRef.current;
+    let response = await createConfigRequest();
+    if (response.status === 401) {
+      if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
+        response = await createConfigRequest();
+      } else if (requestAccessCode()) {
+        response = await createConfigRequest();
+      }
+    }
+
+    const text = await response.text();
+    let data: unknown = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(getErrorMessage(data, text || "Failed to create Soniox temporary key."));
+    }
+
+    if (!data || typeof data !== "object" || typeof (data as Record<string, unknown>).api_key !== "string") {
+      throw new Error("The Soniox temporary key response did not include api_key.");
+    }
+
+    return { api_key: (data as Record<string, string>).api_key };
+  }, [getAccessCodeHeaders, requestAccessCode]);
+
+  const updateSonioxCaptionState = useCallback(() => {
+    const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current);
+    setCaptions(next.captions);
+    setTranslationCaptions(next.translationCaptions);
+  }, []);
+
+  const handleSonioxResult = useCallback(
+    (result: SonioxRealtimeResult) => {
+      const buffer = sonioxCaptionBufferRef.current;
+      buffer.partialDisplay = createEmptyCaptionMap();
+      buffer.partialOriginal = createEmptyCaptionMap();
+      buffer.partialTranslation = createEmptyCaptionMap();
+
+      result.tokens.forEach((token: SonioxRealtimeToken, tokenIndex) => {
+        if (!token.text) return;
+
+        const translationStatus =
+          token.translation_status === "translation" ? "translation" : token.translation_status === "none" ? "original" : "original";
+        const language = normalizeSonioxLanguage(token.language);
+        const sourceLanguageFromToken = normalizeSonioxLanguage(token.source_language);
+        if (!language) return;
+
+        if (translationStatus === "original") {
+          commitSourceLanguage(language);
+        } else if (sourceLanguageFromToken) {
+          commitSourceLanguage(sourceLanguageFromToken);
+        }
+
+        const finalTokenKey = token.is_final
+          ? getSonioxFinalTokenKey(token, translationStatus, language, result, tokenIndex)
+          : null;
+        if (finalTokenKey && sonioxFinalTokenKeysRef.current.has(finalTokenKey)) return;
+
+        const targetBuffer =
+          translationStatus === "translation"
+            ? token.is_final
+              ? buffer.finalTranslation
+              : buffer.partialTranslation
+            : token.is_final
+              ? buffer.finalOriginal
+              : buffer.partialOriginal;
+        const displayBuffer = token.is_final ? buffer.finalDisplay : buffer.partialDisplay;
+
+        targetBuffer[language] = appendSonioxCaptionText(targetBuffer[language], token.text);
+        displayBuffer[language] = appendSonioxCaptionText(displayBuffer[language], token.text);
+
+        if (token.is_final) {
+          if (finalTokenKey) sonioxFinalTokenKeysRef.current.add(finalTokenKey);
+          savedCaptionsRef.current[language] = appendSavedCaptionDelta(savedCaptionsRef.current[language], token.text);
+        }
+      });
+
+      updateSonioxCaptionState();
+    },
+    [commitSourceLanguage, updateSonioxCaptionState]
+  );
+
+  const startSonioxTranslation = useCallback(
+    async (audioInputId?: string) => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser does not support microphone capture.");
+      }
+
+      if (typeof MediaRecorder === "undefined") {
+        throw new Error("This browser does not support microphone recording.");
+      }
+
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+
+      if (audioInputId) {
+        audioConstraints.deviceId = { exact: audioInputId };
+      }
+
+      const client = new SonioxClient({
+        config: createSonioxConnectionConfig,
+      });
+      const source = new MicrophoneSource({ constraints: audioConstraints });
+      const recording = client.realtime.record({
+        model: "stt-rt-v4",
+        language_hints: ["en", "zh"],
+        enable_language_identification: true,
+        enable_endpoint_detection: true,
+        translation: {
+          type: "two_way",
+          language_a: "en",
+          language_b: "zh",
+        },
+        auto_reconnect: true,
+        source,
+      });
+
+      sonioxRecordingRef.current = recording;
+
+      recording.on("connected", () => {
+        if (sonioxRecordingRef.current !== recording) return;
+        setRealtimeStatus("live");
+      });
+      recording.on("result", handleSonioxResult);
+      recording.on("finalized", () => {
+        if (sonioxRecordingRef.current !== recording) return;
+        sonioxCaptionBufferRef.current.partialDisplay = createEmptyCaptionMap();
+        sonioxCaptionBufferRef.current.partialOriginal = createEmptyCaptionMap();
+        sonioxCaptionBufferRef.current.partialTranslation = createEmptyCaptionMap();
+        updateSonioxCaptionState();
+      });
+      recording.on("finished", () => {
+        if (sonioxRecordingRef.current !== recording) return;
+        sonioxRecordingRef.current = null;
+        if (statusRef.current !== "stopping") setRealtimeStatus("idle");
+      });
+      recording.on("error", (caughtError) => {
+        if (sonioxRecordingRef.current !== recording) return;
+        sonioxRecordingRef.current = null;
+        if (statusRef.current === "idle" || statusRef.current === "stopping") return;
+        setError(caughtError instanceof Error ? caughtError.message : "Soniox realtime API error.");
+        setRealtimeStatus("error");
+      });
+      recording.on("state_change", ({ new_state }) => {
+        if (sonioxRecordingRef.current !== recording) return;
+        if (new_state === "recording") setRealtimeStatus("live");
+        if (new_state === "reconnecting" || new_state === "connecting") setRealtimeStatus("connecting");
+      });
+
+      void refreshAudioInputs();
+    },
+    [
+      createSonioxConnectionConfig,
+      handleSonioxResult,
+      refreshAudioInputs,
+      setRealtimeStatus,
+      updateSonioxCaptionState,
+    ]
+  );
+
+  const start = useCallback(async (audioInputId = selectedAudioInputIdRef.current) => {
+    setRealtimeStatus("connecting");
+    setError("");
+    cleanupRealtime();
+    resetCaptionState();
+
+    try {
+      if (apiProviderRef.current === "openai") {
+        await startOpenAiTranslation(audioInputId);
+      } else {
+        await startSonioxTranslation(audioInputId);
+      }
     } catch (caughtError) {
-      stop();
+      cleanupRealtime();
       setRealtimeStatus("error");
       setError(caughtError instanceof Error ? caughtError.message : "Unknown error.");
     }
-  }, [connectTranslation, refreshAudioInputs, setRealtimeStatus, stop]);
+  }, [cleanupRealtime, resetCaptionState, setRealtimeStatus, startOpenAiTranslation, startSonioxTranslation]);
 
   const handleAudioInputChange = useCallback(
     async (deviceId: string) => {
@@ -759,10 +1117,10 @@ export default function Home() {
 
       if (statusRef.current !== "live") return;
 
-      cleanupRealtime();
+      await stop();
       await start(deviceId);
     },
-    [cleanupRealtime, start]
+    [start, stop]
   );
 
   const toggleFullscreen = useCallback(async () => {
@@ -864,8 +1222,9 @@ export default function Home() {
   );
 
   const saveCaptions = useCallback(() => {
-    const savedEnglish = savedCaptionsRef.current.en.trim() || captions.en.trim();
-    const savedChinese = savedCaptionsRef.current.zh.trim() || captions.zh.trim();
+    const allowCaptionFallback = apiProviderRef.current === "openai";
+    const savedEnglish = savedCaptionsRef.current.en.trim() || (allowCaptionFallback ? captions.en.trim() : "");
+    const savedChinese = savedCaptionsRef.current.zh.trim() || (allowCaptionFallback ? captions.zh.trim() : "");
 
     if (!savedEnglish && !savedChinese) {
       setError("No transcript to save yet.");
@@ -897,6 +1256,9 @@ export default function Home() {
   }, [captions.en, captions.zh]);
 
   const isRunning = status === "connecting" || status === "live" || status === "stopping";
+  const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
+  const apiKeyPlaceholder = apiProvider === "openai" ? "OpenAI key" : "Soniox key";
+  const apiKeyValue = apiProvider === "openai" ? openaiApiKey : sonioxApiKey;
   const singleTargetLanguage: TargetLanguage = sourceLanguage === "zh" ? "en" : "zh";
   const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
   const singleCaption = translationCaptions[singleTargetLanguage] || "等待翻译 Waiting translate";
@@ -921,19 +1283,40 @@ export default function Home() {
           </span>
         </div>
 
-        <label className="api-key-control" title="OpenAI API key">
+        <label className="provider-control" title="API provider">
+          <span>Provider</span>
+          <select
+            aria-label="API provider"
+            className="provider-select"
+            disabled={isRunning}
+            onChange={(event) => handleApiProviderChange(event.currentTarget.value)}
+            value={apiProvider}
+          >
+            {API_PROVIDERS.map((provider) => (
+              <option key={provider.code} value={provider.code}>
+                {provider.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="api-key-control" title={apiKeyLabel}>
           <span>API</span>
           <input
-            aria-label="OpenAI API key"
+            aria-label={apiKeyLabel}
             autoCapitalize="none"
             autoComplete="off"
             className="api-key-input"
             disabled={isRunning}
-            onChange={(event) => handleOpenAiApiKeyChange(event.currentTarget.value)}
-            placeholder="OpenAI key"
+            onChange={(event) =>
+              apiProvider === "openai"
+                ? handleOpenAiApiKeyChange(event.currentTarget.value)
+                : handleSonioxApiKeyChange(event.currentTarget.value)
+            }
+            placeholder={apiKeyPlaceholder}
             spellCheck={false}
             type="password"
-            value={openaiApiKey}
+            value={apiKeyValue}
           />
         </label>
 
@@ -1028,7 +1411,7 @@ export default function Home() {
 
         <button
           className={isRunning ? "tiny-button danger" : "tiny-button primary"}
-          onClick={isRunning ? stop : () => void start()}
+          onClick={isRunning ? () => void stop() : () => void start()}
           type="button"
         >
           {isRunning ? "Stop" : "Start"}
