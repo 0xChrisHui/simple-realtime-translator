@@ -59,6 +59,7 @@ select {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  max-width: calc(100vw - 16px);
   opacity: 0.32;
   padding: 8px;
   position: fixed;
@@ -141,6 +142,7 @@ select {
   min-width: 62px;
   padding: 0 9px;
   text-transform: none;
+  white-space: nowrap;
 }
 
 .switch-option:hover:not(:disabled),
@@ -256,6 +258,23 @@ select {
   outline: none;
   text-align: right;
   width: 54px;
+}
+
+.font-dock {
+  align-items: center;
+  bottom: 10px;
+  display: flex;
+  gap: 8px;
+  opacity: 0.34;
+  position: fixed;
+  right: 10px;
+  transition: opacity 0.16s ease;
+  z-index: 4;
+}
+
+.font-dock:hover,
+.font-dock:focus-within {
+  opacity: 1;
 }
 
 .status-dot {

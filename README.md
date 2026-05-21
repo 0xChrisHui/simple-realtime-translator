@@ -17,9 +17,8 @@ The app is designed for an in-person meeting setup: a laptop captures speech, th
 - Manual audio input selection for microphones or system-provided audio devices
 - Adjustable English and Chinese caption font sizes
 - Local one-click transcript export
-- User-provided OpenAI or Soniox API key from the browser, with server environment fallbacks
+- User-provided OpenAI key from the browser, plus user-provided or server-fallback Soniox key
 - Optional public-screen watermark through `NEXT_PUBLIC_WATERMARK_IMAGE`
-- Optional access code protection for Vercel deployments
 
 ## Local Setup
 
@@ -42,14 +41,12 @@ npm run dev -- -p 3001
 Create `.env.local` for local development:
 
 ```bash
-OPENAI_API_KEY=sk-your-openai-api-key
 SONIOX_API_KEY=your-soniox-api-key
 SAFETY_SALT=change-me
-ACCESS_CODE=optional-shared-password
 NEXT_PUBLIC_WATERMARK_IMAGE=/watermark.png
 ```
 
-Users can enter their own OpenAI or Soniox API key in the app. `OPENAI_API_KEY` and `SONIOX_API_KEY` are optional server-side fallbacks when the browser does not provide a key. `ACCESS_CODE` is optional locally, but recommended for public deployments so random visitors cannot spend your API quota.
+Users enter their own OpenAI API key in the app. `SONIOX_API_KEY` is an optional server-side fallback when the browser does not provide a Soniox key. This branch does not use an app access password.
 
 `NEXT_PUBLIC_WATERMARK_IMAGE` is optional. Leave it empty for no watermark, or point it at a public URL or a local file in `public/`.
 
@@ -58,14 +55,12 @@ Users can enter their own OpenAI or Soniox API key in the app. `OPENAI_API_KEY` 
 Add these variables in Vercel Project Settings:
 
 ```bash
-OPENAI_API_KEY=sk-your-openai-api-key
 SONIOX_API_KEY=your-soniox-api-key
 SAFETY_SALT=any-random-string
-ACCESS_CODE=shared-password-for-users
 NEXT_PUBLIC_WATERMARK_IMAGE=https://example.com/watermark.png
 ```
 
-Then deploy the project from GitHub or with the Vercel CLI. If you want every user to bring their own keys, leave `OPENAI_API_KEY` and `SONIOX_API_KEY` unset and keep `ACCESS_CODE` only if the deployment should remain private.
+Then deploy the project from GitHub or with the Vercel CLI. If you want every user to bring their own Soniox key too, leave `SONIOX_API_KEY` unset.
 
 ## How It Works
 
@@ -88,4 +83,4 @@ Soniox currently only provides speech-to-text translated captions in this app. I
 - Use headphones during testing if translated audio playback is enabled, otherwise the microphone may capture playback audio.
 - The floating caption window uses Document Picture-in-Picture when the browser supports it. Use Chrome or Edge for the best always-on-top behavior over PPT.
 - The current UI is tuned for English/Chinese conference display.
-- For public usage, keep `ACCESS_CODE` enabled and monitor provider usage.
+- For public usage, monitor provider usage because this branch intentionally removes the app access password.

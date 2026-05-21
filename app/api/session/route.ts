@@ -39,12 +39,11 @@ export async function POST(request: NextRequest) {
     body = {};
   }
 
-  const requestApiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey.trim() : "";
-  const apiKey = requestApiKey || process.env.OPENAI_API_KEY;
+  const apiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey.trim() : "";
 
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Enter an OpenAI API key in the app, or set OPENAI_API_KEY on the server." },
+      { error: "Enter your OpenAI API key in the app." },
       { status: 400, headers: noStoreHeaders }
     );
   }

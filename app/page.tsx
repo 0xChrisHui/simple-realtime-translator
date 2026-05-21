@@ -448,7 +448,6 @@ export default function Home() {
 
   const statusRef = useRef<Status>("idle");
   const apiProviderRef = useRef<ApiProvider>("openai");
-  const accessCodeRef = useRef("");
   const openaiApiKeyRef = useRef("");
   const sonioxApiKeyRef = useRef("");
   const selectedAudioInputIdRef = useRef("");
@@ -486,14 +485,6 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      accessCodeRef.current = window.localStorage.getItem("translatorAccessCode") ?? "";
-    } catch {
-      accessCodeRef.current = "";
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
       const storedProvider = window.localStorage.getItem(API_PROVIDER_STORAGE_KEY);
       const nextProvider: ApiProvider = storedProvider === "soniox" ? "soniox" : "openai";
       apiProviderRef.current = nextProvider;
@@ -524,7 +515,7 @@ export default function Home() {
   }, []);
 
   const getAccessCodeHeaders = useCallback((): Record<string, string> => {
-    return accessCodeRef.current ? { "x-access-code": accessCodeRef.current } : {};
+    return {};
   }, []);
 
   const handleApiProviderChange = useCallback((value: string) => {
@@ -633,21 +624,6 @@ export default function Home() {
     [commitSourceLanguage]
   );
 
-  const requestAccessCode = useCallback(() => {
-    const accessCode = window.prompt("Access code");
-    const nextAccessCode = accessCode?.trim();
-    if (!nextAccessCode) return false;
-
-    accessCodeRef.current = nextAccessCode;
-    try {
-      window.localStorage.setItem("translatorAccessCode", nextAccessCode);
-    } catch {
-      // The code still works for this tab even when local storage is unavailable.
-    }
-
-    return true;
-  }, []);
-
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       setError("This browser cannot list audio input devices.");
@@ -737,17 +713,8 @@ export default function Home() {
         body: JSON.stringify({ targetLanguage, openaiApiKey: openaiApiKeyRef.current || undefined }),
       });
 
-    const accessCodeBeforeRequest = accessCodeRef.current;
     let sessionResponse = await createSessionRequest();
-    if (sessionResponse.status === 401) {
-      if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
-        sessionResponse = await createSessionRequest();
-      } else if (requestAccessCode()) {
-        sessionResponse = await createSessionRequest();
-      }
-    }
-
-    const sessionText = await sessionResponse.text();
+    let sessionText = await sessionResponse.text();
     let sessionData: unknown = {};
     try {
       sessionData = sessionText ? JSON.parse(sessionText) : {};
@@ -765,7 +732,7 @@ export default function Home() {
     }
 
     return clientSecret;
-  }, [getAccessCodeHeaders, requestAccessCode]);
+  }, [getAccessCodeHeaders]);
 
   const connectTranslation = useCallback(
     async (targetLanguage: TargetLanguage, sourceStream: MediaStream) => {
@@ -856,26 +823,27 @@ export default function Home() {
           body: offer.sdp,
         });
 
-      const accessCodeBeforeRequest = accessCodeRef.current;
       let sdpResponse = await createCallRequest();
-      if (sdpResponse.status === 401) {
-        if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
-          sdpResponse = await createCallRequest();
-        } else if (requestAccessCode()) {
-          sdpResponse = await createCallRequest();
+      let sdpText = await sdpResponse.text();
+      let sdpErrorData: unknown = {};
+      if (!sdpResponse.ok) {
+        try {
+          sdpErrorData = sdpText ? JSON.parse(sdpText) : {};
+        } catch {
+          sdpErrorData = {};
         }
       }
 
       if (!sdpResponse.ok) {
-        throw new Error(await sdpResponse.text());
+        throw new Error(getErrorMessage(sdpErrorData, sdpText || "Failed to connect OpenAI Realtime call."));
       }
 
       await pc.setRemoteDescription({
         type: "answer",
-        sdp: await sdpResponse.text(),
+        sdp: sdpText,
       });
     },
-    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, requestAccessCode, setRealtimeStatus, trackSourceLanguage]
+    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, setRealtimeStatus, trackSourceLanguage]
   );
 
   const resetCaptionState = useCallback(() => {
@@ -925,17 +893,8 @@ export default function Home() {
         body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
       });
 
-    const accessCodeBeforeRequest = accessCodeRef.current;
     let response = await createConfigRequest();
-    if (response.status === 401) {
-      if (accessCodeRef.current && accessCodeRef.current !== accessCodeBeforeRequest) {
-        response = await createConfigRequest();
-      } else if (requestAccessCode()) {
-        response = await createConfigRequest();
-      }
-    }
-
-    const text = await response.text();
+    let text = await response.text();
     let data: unknown = {};
     try {
       data = text ? JSON.parse(text) : {};
@@ -952,7 +911,7 @@ export default function Home() {
     }
 
     return { api_key: (data as Record<string, string>).api_key };
-  }, [getAccessCodeHeaders, requestAccessCode]);
+  }, [getAccessCodeHeaders]);
 
   const updateSonioxCaptionState = useCallback(() => {
     const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current);
@@ -1093,8 +1052,15 @@ export default function Home() {
   );
 
   const start = useCallback(async (audioInputId = selectedAudioInputIdRef.current) => {
-    setRealtimeStatus("connecting");
     setError("");
+    if (apiProviderRef.current === "openai" && !openaiApiKeyRef.current) {
+      resetCaptionState();
+      setRealtimeStatus("idle");
+      setError("请输入你的 API");
+      return;
+    }
+
+    setRealtimeStatus("connecting");
     cleanupRealtime();
     resetCaptionState();
 
@@ -1262,7 +1228,9 @@ export default function Home() {
   const apiKeyValue = apiProvider === "openai" ? openaiApiKey : sonioxApiKey;
   const singleTargetLanguage: TargetLanguage = sourceLanguage === "zh" ? "en" : "zh";
   const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
-  const singleCaption = translationCaptions[singleTargetLanguage] || "等待翻译 Waiting translate";
+  const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
+  const waitingTranslationText = missingOpenAiApiKey ? "请输入你的 API" : "等待翻译 Waiting translate";
+  const singleCaption = translationCaptions[singleTargetLanguage] || waitingTranslationText;
   const captionStyle: CaptionFontStyle = {
     "--caption-font-size-en": `${captionFontSizes.en}px`,
     "--caption-font-size-zh": `${captionFontSizes.zh}px`,
@@ -1378,36 +1346,6 @@ export default function Home() {
           Float
         </button>
 
-        <label className="font-control" title="English caption font size">
-          <span>EN</span>
-          <input
-            aria-label="English caption font size"
-            className="font-input"
-            inputMode="numeric"
-            max={MAX_CAPTION_FONT_SIZE}
-            min={MIN_CAPTION_FONT_SIZE}
-            onBlur={() => commitCaptionFontSize("en")}
-            onChange={(event) => handleCaptionFontSizeChange("en", event.currentTarget.value)}
-            type="number"
-            value={captionFontSizeInputs.en}
-          />
-        </label>
-
-        <label className="font-control" title="Chinese caption font size">
-          <span>中文</span>
-          <input
-            aria-label="Chinese caption font size"
-            className="font-input"
-            inputMode="numeric"
-            max={MAX_CAPTION_FONT_SIZE}
-            min={MIN_CAPTION_FONT_SIZE}
-            onBlur={() => commitCaptionFontSize("zh")}
-            onChange={(event) => handleCaptionFontSizeChange("zh", event.currentTarget.value)}
-            type="number"
-            value={captionFontSizeInputs.zh}
-          />
-        </label>
-
         <button className="tiny-button" onClick={toggleFullscreen} title="Toggle fullscreen" type="button">
           FS
         </button>
@@ -1464,6 +1402,38 @@ export default function Home() {
 
         {error ? <div className="error-banner">{error}</div> : null}
       </section>
+
+      <div className="font-dock" aria-label="Caption font size controls">
+        <label className="font-control" title="English caption font size">
+          <span>EN</span>
+          <input
+            aria-label="English caption font size"
+            className="font-input"
+            inputMode="numeric"
+            max={MAX_CAPTION_FONT_SIZE}
+            min={MIN_CAPTION_FONT_SIZE}
+            onBlur={() => commitCaptionFontSize("en")}
+            onChange={(event) => handleCaptionFontSizeChange("en", event.currentTarget.value)}
+            type="number"
+            value={captionFontSizeInputs.en}
+          />
+        </label>
+
+        <label className="font-control" title="Chinese caption font size">
+          <span>中文</span>
+          <input
+            aria-label="Chinese caption font size"
+            className="font-input"
+            inputMode="numeric"
+            max={MAX_CAPTION_FONT_SIZE}
+            min={MIN_CAPTION_FONT_SIZE}
+            onBlur={() => commitCaptionFontSize("zh")}
+            onChange={(event) => handleCaptionFontSizeChange("zh", event.currentTarget.value)}
+            type="number"
+            value={captionFontSizeInputs.zh}
+          />
+        </label>
+      </div>
       </main>
 
       {floatingContainer
@@ -1473,6 +1443,7 @@ export default function Home() {
               captions={captions}
               displayMode={displayMode}
               onClose={closeFloatingWindow}
+              singleFallbackCaption={waitingTranslationText}
               sourceLanguage={sourceLanguage}
               translationCaptions={translationCaptions}
             />,
@@ -1488,6 +1459,7 @@ type FloatingCaptionWindowProps = {
   captions: CaptionMap;
   displayMode: DisplayMode;
   onClose: () => void;
+  singleFallbackCaption: string;
   sourceLanguage: TargetLanguage;
   translationCaptions: CaptionMap;
 };
@@ -1497,6 +1469,7 @@ function FloatingCaptionWindow({
   captions,
   displayMode,
   onClose,
+  singleFallbackCaption,
   sourceLanguage,
   translationCaptions,
 }: FloatingCaptionWindowProps) {
@@ -1504,7 +1477,7 @@ function FloatingCaptionWindow({
   const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
   const singleCaption = getFloatingCaptionText(
     translationCaptions[singleTargetLanguage],
-    "\u7b49\u5f85\u7ffb\u8bd1 Waiting translate"
+    singleFallbackCaption
   );
   const floatingStyle: FloatingCaptionStyle = {
     "--floating-font-size-en": `${captionFontSizes.en}px`,
