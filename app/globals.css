@@ -457,6 +457,7 @@ select {
   padding: 4px 0 18px;
   text-align: left;
   text-wrap: wrap;
+  white-space: pre-line;
   word-break: normal;
 }
 

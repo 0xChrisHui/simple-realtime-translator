@@ -105,6 +105,8 @@ const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en
 const DISPLAY_CAPTION_MAX_CHARS = 4000;
 const FOCUS_TIMELINE_MAX_SEGMENTS = 32;
 const FOCUS_SEGMENT_MAX_CHARS = 900;
+const MISSING_OPENAI_API_KEY_CAPTION = "Please enter your\nAPI key";
+const MISSING_OPENAI_API_KEY_MESSAGE = "Please enter your OpenAI API key.";
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
@@ -244,6 +246,7 @@ const FLOATING_WINDOW_CSS = `
     overflow-wrap: anywhere;
     text-align: left;
     text-wrap: wrap;
+    white-space: pre-line;
     word-break: normal;
   }
 
@@ -1308,7 +1311,7 @@ export default function Home() {
     if (apiProviderRef.current === "openai" && !openaiApiKeyRef.current) {
       resetCaptionState();
       setRealtimeStatus("idle");
-      setError("请输入你的 API");
+      setError(MISSING_OPENAI_API_KEY_MESSAGE);
       return;
     }
 
@@ -1490,7 +1493,7 @@ export default function Home() {
   const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
   const focusTarget = TARGETS.find((target) => target.code === focusPanelLanguage) ?? TARGETS[0];
   const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
-  const waitingTranslationText = missingOpenAiApiKey ? "请输入你的 API" : "等待翻译 Waiting translate";
+  const waitingTranslationText = missingOpenAiApiKey ? MISSING_OPENAI_API_KEY_CAPTION : "等待翻译 Waiting translate";
   const captionStyle: CaptionFontStyle = {
     "--caption-font-size-en": `${captionFontSizes.en}px`,
     "--caption-font-size-zh": `${captionFontSizes.zh}px`,
