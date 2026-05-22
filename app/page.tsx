@@ -60,6 +60,23 @@ type SourceLanguageSwitchCandidate = {
   chunks: number;
   evidence: number;
 };
+type FocusTranscriptSegment = {
+  id: string;
+  sourceLanguage: TargetLanguage;
+  targetLanguage: TargetLanguage;
+  text: string;
+  final: boolean;
+  startedAt: number;
+  updatedAt: number;
+};
+type TranscriptSession = {
+  id: string;
+  startedAt: number;
+  stoppedAt: number;
+  provider: ApiProvider;
+  segments: FocusTranscriptSegment[];
+  downloaded?: boolean;
+};
 type SonioxCaptionBuffer = {
   finalDisplay: CaptionMap;
   partialDisplay: CaptionMap;
@@ -85,6 +102,9 @@ const SOURCE_LANGUAGE_SWITCH_DELAY_MS = 2500;
 const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
 const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
 const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en: 12, zh: 3 };
+const DISPLAY_CAPTION_MAX_CHARS = 4000;
+const FOCUS_TIMELINE_MAX_SEGMENTS = 32;
+const FOCUS_SEGMENT_MAX_CHARS = 900;
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
@@ -222,7 +242,9 @@ const FLOATING_WINDOW_CSS = `
     max-height: 100%;
     overflow: hidden;
     overflow-wrap: anywhere;
-    text-wrap: pretty;
+    text-align: left;
+    text-wrap: wrap;
+    word-break: normal;
   }
 
   .floating-caption-card-en p {
@@ -321,11 +343,11 @@ function normalizeSonioxLanguage(language: string | undefined): TargetLanguage |
 }
 
 function appendSonioxCaptionText(previous: string, text: string) {
-  return appendCaptionDelta(previous, text, 1600);
+  return appendCaptionDelta(previous, text, DISPLAY_CAPTION_MAX_CHARS);
 }
 
 function combineSonioxCaption(finalText: string, partialText: string) {
-  return appendCaptionDelta(finalText, partialText, 1600);
+  return appendCaptionDelta(finalText, partialText, DISPLAY_CAPTION_MAX_CHARS);
 }
 
 function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer) {
@@ -372,6 +394,31 @@ function getInputLanguageEvidence(delta: string, language: TargetLanguage) {
   return delta.match(/[A-Za-z]/g)?.length ?? 0;
 }
 
+function isOutputTranscriptDoneEvent(type: string | undefined) {
+  return (
+    type === "session.output_transcript.done" ||
+    type === "session.output_transcript.completed" ||
+    type === "session.output_transcript.final"
+  );
+}
+
+function getFocusTargetLanguage(sourceLanguage: TargetLanguage): TargetLanguage {
+  return sourceLanguage === "zh" ? "en" : "zh";
+}
+
+function createTranscriptId(prefix: string) {
+  const random =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  return `${prefix}-${random}`;
+}
+
+function normalizeTranscriptText(value: string) {
+  return value.replace(/[ \t\r\n]+/g, " ").trim();
+}
+
 function formatTimestampForFile(date: Date) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(
@@ -384,6 +431,56 @@ function formatTimestampForText(date: Date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(
     date.getMinutes()
   )}:${pad(date.getSeconds())}`;
+}
+
+function formatTimeOfDay(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatSessionTimeRange(session: TranscriptSession) {
+  const start = new Date(session.startedAt);
+  const stop = new Date(session.stoppedAt);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const day = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
+  return `${day} ${pad(start.getHours())}:${pad(start.getMinutes())}-${pad(stop.getHours())}:${pad(stop.getMinutes())}`;
+}
+
+function formatDuration(startedAt: number, stoppedAt: number) {
+  const seconds = Math.max(0, Math.round((stoppedAt - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function getProviderLabel(provider: ApiProvider) {
+  return provider === "soniox" ? "Soniox" : "OpenAI";
+}
+
+function getSessionFinalSegments(session: TranscriptSession) {
+  return session.segments.filter((segment) => segment.final && segment.text.trim());
+}
+
+function formatTranscriptSession(session: TranscriptSession) {
+  const lines = getSessionFinalSegments(session).map((segment) => {
+    return `[${formatTimeOfDay(new Date(segment.startedAt))}] ${segment.text.trim()}`;
+  });
+
+  return [
+    "Simple Realtime Translator",
+    `Session: ${formatTimestampForText(new Date(session.startedAt))} - ${formatTimestampForText(
+      new Date(session.stoppedAt)
+    )}`,
+    `Provider: ${getProviderLabel(session.provider)}`,
+    "",
+    ...lines,
+    "",
+  ].join("\n");
 }
 
 function clampCaptionFontSize(value: number) {
@@ -429,6 +526,10 @@ export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
   const [captions, setCaptions] = useState<CaptionMap>({ en: "", zh: "" });
   const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>({ en: "", zh: "" });
+  const [focusSegments, setFocusSegments] = useState<FocusTranscriptSegment[]>([]);
+  const [transcriptSessions, setTranscriptSessions] = useState<TranscriptSession[]>([]);
+  const [transcriptReadyVisible, setTranscriptReadyVisible] = useState(false);
+  const [savePanelOpen, setSavePanelOpen] = useState(false);
   const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
   const [displayMode, setDisplayMode] = useState<DisplayMode>("dual");
   const [error, setError] = useState("");
@@ -465,6 +566,8 @@ export default function Home() {
   const sourceLanguageSwitchCandidateRef = useRef<SourceLanguageSwitchCandidate | null>(null);
   const lastInputLanguageRef = useRef<TargetLanguage>("en");
   const savedCaptionsRef = useRef<CaptionMap>({ en: "", zh: "" });
+  const activeTranscriptSessionRef = useRef<TranscriptSession | null>(null);
+  const focusPartialSegmentIdsRef = useRef<Partial<Record<TargetLanguage, string>>>({});
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -476,7 +579,7 @@ export default function Home() {
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [captions, displayMode, translationCaptions]);
+  }, [captions, displayMode, focusSegments, translationCaptions]);
 
   const setRealtimeStatus = useCallback((nextStatus: Status) => {
     statusRef.current = nextStatus;
@@ -549,16 +652,150 @@ export default function Home() {
     }
   }, []);
 
+  const publishFocusSegments = useCallback((segments?: FocusTranscriptSegment[]) => {
+    const source = segments ?? activeTranscriptSessionRef.current?.segments ?? [];
+    setFocusSegments(source.slice(-FOCUS_TIMELINE_MAX_SEGMENTS));
+  }, []);
+
+  const finalizeCurrentFocusSegments = useCallback(() => {
+    const session = activeTranscriptSessionRef.current;
+    if (!session) return;
+
+    const now = Date.now();
+    let changed = false;
+    session.segments = session.segments.map((segment) => {
+      if (segment.final) return segment;
+
+      changed = true;
+      return {
+        ...segment,
+        text: normalizeTranscriptText(segment.text),
+        final: true,
+        updatedAt: now,
+      };
+    });
+    focusPartialSegmentIdsRef.current = {};
+
+    if (changed) publishFocusSegments(session.segments);
+  }, [publishFocusSegments]);
+
+  const appendFocusTranslationDelta = useCallback(
+    (targetLanguage: TargetLanguage, delta: string) => {
+      const session = activeTranscriptSessionRef.current;
+      if (!session) return;
+
+      const sourceLanguage = sourceLanguageRef.current;
+      if (targetLanguage !== getFocusTargetLanguage(sourceLanguage)) return;
+
+      const normalizedDelta = delta.replace(/[ \t\r\n]+/g, " ");
+      if (!normalizedDelta.trim()) return;
+
+      const now = Date.now();
+      const partialId = focusPartialSegmentIdsRef.current[targetLanguage];
+      let segment = session.segments.find(
+        (candidate) =>
+          candidate.id === partialId &&
+          !candidate.final &&
+          candidate.sourceLanguage === sourceLanguage &&
+          candidate.targetLanguage === targetLanguage
+      );
+
+      if (segment) {
+        const nextText = normalizeTranscriptText(`${segment.text}${normalizedDelta}`);
+        if (segment.text && nextText.length > FOCUS_SEGMENT_MAX_CHARS) {
+          segment.final = true;
+          segment.updatedAt = now;
+          segment = undefined;
+        } else {
+          segment.text = nextText;
+          segment.updatedAt = now;
+        }
+      }
+
+      if (!segment) {
+        segment = {
+          id: createTranscriptId("focus"),
+          sourceLanguage,
+          targetLanguage,
+          text: normalizeTranscriptText(normalizedDelta),
+          final: false,
+          startedAt: now,
+          updatedAt: now,
+        };
+        session.segments.push(segment);
+        focusPartialSegmentIdsRef.current[targetLanguage] = segment.id;
+      }
+
+      publishFocusSegments(session.segments);
+    },
+    [publishFocusSegments]
+  );
+
+  const beginTranscriptSession = useCallback(() => {
+    const now = Date.now();
+    activeTranscriptSessionRef.current = {
+      id: createTranscriptId("session"),
+      startedAt: now,
+      stoppedAt: 0,
+      provider: apiProviderRef.current,
+      segments: [],
+    };
+    focusPartialSegmentIdsRef.current = {};
+    setFocusSegments([]);
+    setTranscriptReadyVisible(false);
+  }, []);
+
+  const discardActiveTranscriptSession = useCallback(() => {
+    activeTranscriptSessionRef.current = null;
+    focusPartialSegmentIdsRef.current = {};
+    setFocusSegments([]);
+  }, []);
+
+  const finishActiveTranscriptSession = useCallback(() => {
+    const activeSession = activeTranscriptSessionRef.current;
+    if (!activeSession) return;
+
+    finalizeCurrentFocusSegments();
+
+    const stoppedAt = Date.now();
+    const finalSegments = activeSession.segments
+      .map((segment) => ({
+        ...segment,
+        text: normalizeTranscriptText(segment.text),
+        final: true,
+        updatedAt: segment.updatedAt || stoppedAt,
+      }))
+      .filter((segment) => segment.text);
+
+    activeTranscriptSessionRef.current = null;
+    focusPartialSegmentIdsRef.current = {};
+
+    if (!finalSegments.length) return;
+
+    const session: TranscriptSession = {
+      ...activeSession,
+      stoppedAt,
+      segments: finalSegments,
+    };
+
+    setTranscriptSessions((previous) => [session, ...previous]);
+    setTranscriptReadyVisible(true);
+    publishFocusSegments(session.segments);
+  }, [finalizeCurrentFocusSegments, publishFocusSegments]);
+
   const commitSourceLanguage = useCallback((language: TargetLanguage) => {
+    if (sourceLanguageConfirmedRef.current && sourceLanguageRef.current !== language) {
+      finalizeCurrentFocusSegments();
+    }
+
     sourceLanguageRef.current = language;
     sourceLanguageConfirmedRef.current = true;
     sourceLanguageSwitchCandidateRef.current = null;
     setSourceLanguage(language);
-  }, []);
+  }, [finalizeCurrentFocusSegments]);
 
-  const trackSourceLanguage = useCallback(
-    (inputLanguage: TargetLanguage, delta: string) => {
-      const evidence = getInputLanguageEvidence(delta, inputLanguage);
+  const trackSourceLanguageEvidence = useCallback(
+    (inputLanguage: TargetLanguage, evidence: number) => {
       if (evidence <= 0) return;
 
       const committedLanguage = sourceLanguageRef.current;
@@ -606,6 +843,13 @@ export default function Home() {
       }
     },
     [commitSourceLanguage]
+  );
+
+  const trackSourceLanguage = useCallback(
+    (inputLanguage: TargetLanguage, delta: string) => {
+      trackSourceLanguageEvidence(inputLanguage, getInputLanguageEvidence(delta, inputLanguage));
+    },
+    [trackSourceLanguageEvidence]
   );
 
   const refreshAudioInputs = useCallback(async () => {
@@ -686,8 +930,9 @@ export default function Home() {
     }
 
     cleanupRealtime();
+    finishActiveTranscriptSession();
     setRealtimeStatus("idle");
-  }, [cleanupRealtime, setRealtimeStatus]);
+  }, [cleanupRealtime, finishActiveTranscriptSession, setRealtimeStatus]);
 
   const createClientSecret = useCallback(async (targetLanguage: TargetLanguage) => {
     const createSessionRequest = () =>
@@ -756,14 +1001,19 @@ export default function Home() {
               savedCaptionsRef.current[targetLanguage],
               event.delta
             );
+            appendFocusTranslationDelta(targetLanguage, event.delta);
             setTranslationCaptions((previous) => ({
               ...previous,
-              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, 1600),
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
             setCaptions((previous) => ({
               ...previous,
-              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, 1600),
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
+          }
+
+          if (isOutputTranscriptDoneEvent(event.type) && targetLanguage === getFocusTargetLanguage(sourceLanguageRef.current)) {
+            finalizeCurrentFocusSegments();
           }
 
           if (
@@ -777,7 +1027,7 @@ export default function Home() {
             savedCaptionsRef.current[inputLanguage] = appendSavedCaptionDelta(savedCaptionsRef.current[inputLanguage], event.delta);
             setCaptions((previous) => ({
               ...previous,
-              [inputLanguage]: appendCaptionDelta(previous[inputLanguage], event.delta as string, 1600),
+              [inputLanguage]: appendCaptionDelta(previous[inputLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
           }
 
@@ -827,18 +1077,28 @@ export default function Home() {
         sdp: sdpText,
       });
     },
-    [cleanupRealtime, createClientSecret, getAccessCodeHeaders, setRealtimeStatus, trackSourceLanguage]
+    [
+      appendFocusTranslationDelta,
+      cleanupRealtime,
+      createClientSecret,
+      finalizeCurrentFocusSegments,
+      getAccessCodeHeaders,
+      setRealtimeStatus,
+      trackSourceLanguage,
+    ]
   );
 
   const resetCaptionState = useCallback(() => {
     setCaptions({ en: "", zh: "" });
     setTranslationCaptions({ en: "", zh: "" });
+    setFocusSegments([]);
     setSourceLanguage("en");
     sourceLanguageRef.current = "en";
     sourceLanguageConfirmedRef.current = false;
     sourceLanguageSwitchCandidateRef.current = null;
     lastInputLanguageRef.current = "en";
     savedCaptionsRef.current = { en: "", zh: "" };
+    focusPartialSegmentIdsRef.current = {};
     sonioxCaptionBufferRef.current = createEmptySonioxCaptionBuffer();
     sonioxFinalTokenKeysRef.current = new Set();
   }, []);
@@ -920,9 +1180,12 @@ export default function Home() {
         if (!language) return;
 
         if (translationStatus === "original") {
-          commitSourceLanguage(language);
+          trackSourceLanguage(language, token.text);
         } else if (sourceLanguageFromToken) {
-          commitSourceLanguage(sourceLanguageFromToken);
+          trackSourceLanguageEvidence(
+            sourceLanguageFromToken,
+            Math.max(SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE[sourceLanguageFromToken], token.text.trim().length)
+          );
         }
 
         const finalTokenKey = token.is_final
@@ -946,12 +1209,15 @@ export default function Home() {
         if (token.is_final) {
           if (finalTokenKey) sonioxFinalTokenKeysRef.current.add(finalTokenKey);
           savedCaptionsRef.current[language] = appendSavedCaptionDelta(savedCaptionsRef.current[language], token.text);
+          if (translationStatus === "translation") {
+            appendFocusTranslationDelta(language, token.text);
+          }
         }
       });
 
       updateSonioxCaptionState();
     },
-    [commitSourceLanguage, updateSonioxCaptionState]
+    [appendFocusTranslationDelta, trackSourceLanguage, trackSourceLanguageEvidence, updateSonioxCaptionState]
   );
 
   const startSonioxTranslation = useCallback(
@@ -1004,6 +1270,7 @@ export default function Home() {
         sonioxCaptionBufferRef.current.partialDisplay = createEmptyCaptionMap();
         sonioxCaptionBufferRef.current.partialOriginal = createEmptyCaptionMap();
         sonioxCaptionBufferRef.current.partialTranslation = createEmptyCaptionMap();
+        finalizeCurrentFocusSegments();
         updateSonioxCaptionState();
       });
       recording.on("finished", () => {
@@ -1028,6 +1295,7 @@ export default function Home() {
     },
     [
       createSonioxConnectionConfig,
+      finalizeCurrentFocusSegments,
       handleSonioxResult,
       refreshAudioInputs,
       setRealtimeStatus,
@@ -1047,6 +1315,7 @@ export default function Home() {
     setRealtimeStatus("connecting");
     cleanupRealtime();
     resetCaptionState();
+    beginTranscriptSession();
 
     try {
       if (apiProviderRef.current === "openai") {
@@ -1056,10 +1325,19 @@ export default function Home() {
       }
     } catch (caughtError) {
       cleanupRealtime();
+      discardActiveTranscriptSession();
       setRealtimeStatus("error");
       setError(caughtError instanceof Error ? caughtError.message : "Unknown error.");
     }
-  }, [cleanupRealtime, resetCaptionState, setRealtimeStatus, startOpenAiTranslation, startSonioxTranslation]);
+  }, [
+    beginTranscriptSession,
+    cleanupRealtime,
+    discardActiveTranscriptSession,
+    resetCaptionState,
+    setRealtimeStatus,
+    startOpenAiTranslation,
+    startSonioxTranslation,
+  ]);
 
   const handleAudioInputChange = useCallback(
     async (deviceId: string) => {
@@ -1172,49 +1450,47 @@ export default function Home() {
     [captionFontSizes]
   );
 
-  const saveCaptions = useCallback(() => {
-    const allowCaptionFallback = apiProviderRef.current === "openai";
-    const savedEnglish = savedCaptionsRef.current.en.trim() || (allowCaptionFallback ? captions.en.trim() : "");
-    const savedChinese = savedCaptionsRef.current.zh.trim() || (allowCaptionFallback ? captions.zh.trim() : "");
+  const openSavePanel = useCallback(() => {
+    setTranscriptReadyVisible(false);
+    setSavePanelOpen(true);
+  }, []);
 
-    if (!savedEnglish && !savedChinese) {
-      setError("No transcript to save yet.");
+  const downloadTranscriptSession = useCallback((session: TranscriptSession) => {
+    if (!getSessionFinalSegments(session).length) {
+      setError("This transcript is empty.");
       return;
     }
 
-    const now = new Date();
-    const content = [
-      "Simple Realtime Translator",
-      `Saved at: ${formatTimestampForText(now)}`,
-      "",
-      "English",
-      savedEnglish || "(empty)",
-      "",
-      "中文",
-      savedChinese || "(empty)",
-      "",
-    ].join("\n");
-
+    const content = formatTranscriptSession(session);
     const blob = new Blob([`\uFEFF${content}`], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `translation-${formatTimestampForFile(now)}.txt`;
+    link.download = `translation-${session.provider}-${formatTimestampForFile(new Date(session.startedAt))}.txt`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }, [captions.en, captions.zh]);
+
+    setTranscriptSessions((previous) =>
+      previous.map((candidate) => (candidate.id === session.id ? { ...candidate, downloaded: true } : candidate))
+    );
+  }, []);
+
+  const deleteTranscriptSession = useCallback((sessionId: string) => {
+    setTranscriptSessions((previous) => previous.filter((session) => session.id !== sessionId));
+  }, []);
 
   const isRunning = status === "connecting" || status === "live" || status === "stopping";
   const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
   const apiKeyPlaceholder = apiProvider === "openai" ? "OpenAI key" : "Soniox key";
   const apiKeyValue = apiProvider === "openai" ? openaiApiKey : sonioxApiKey;
-  const singleTargetLanguage: TargetLanguage = sourceLanguage === "zh" ? "en" : "zh";
-  const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
+  const singleTargetLanguage = getFocusTargetLanguage(sourceLanguage);
+  const latestFocusSegment = focusSegments[focusSegments.length - 1];
+  const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
+  const focusTarget = TARGETS.find((target) => target.code === focusPanelLanguage) ?? TARGETS[0];
   const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
   const waitingTranslationText = missingOpenAiApiKey ? "请输入你的 API" : "等待翻译 Waiting translate";
-  const singleCaption = translationCaptions[singleTargetLanguage] || waitingTranslationText;
   const captionStyle: CaptionFontStyle = {
     "--caption-font-size-en": `${captionFontSizes.en}px`,
     "--caption-font-size-zh": `${captionFontSizes.zh}px`,
@@ -1304,7 +1580,7 @@ export default function Home() {
           Scan
         </button>
 
-        <button className="tiny-button" onClick={saveCaptions} title="Save captions as a local text file" type="button">
+        <button className="tiny-button" onClick={openSavePanel} title="Open saved transcript sessions" type="button">
           Save
         </button>
 
@@ -1374,27 +1650,97 @@ export default function Home() {
             </article>
           ))
         ) : (
-          <article className={`caption-panel caption-panel-${singleTargetLanguage} single-caption-panel`}>
+          <article className={`caption-panel caption-panel-${focusPanelLanguage} single-caption-panel`}>
             <div className="caption-header">
-              <span>{singleTarget.label}</span>
+              <span>{focusTarget.label}</span>
             </div>
             <div
               className="caption-scroll single-caption-scroll"
               ref={(element) => {
                 if (element) {
-                  captionScrollerRefs.current[singleTargetLanguage] = element;
+                  captionScrollerRefs.current[focusPanelLanguage] = element;
                 } else {
-                  delete captionScrollerRefs.current[singleTargetLanguage];
+                  delete captionScrollerRefs.current[focusPanelLanguage];
                 }
               }}
             >
-              <p>{singleCaption}</p>
+              {focusSegments.length ? (
+                <div className="focus-timeline">
+                  {focusSegments.map((segment) => (
+                    <p
+                      className={`focus-segment focus-segment-${segment.targetLanguage} ${
+                        segment.final ? "focus-segment-final" : "focus-segment-partial"
+                      }`}
+                      key={segment.id}
+                    >
+                      {segment.text}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p>{waitingTranslationText}</p>
+              )}
             </div>
           </article>
         )}
 
         {error ? <div className="error-banner">{error}</div> : null}
       </section>
+
+      {transcriptReadyVisible ? (
+        <div className="transcript-ready-banner" role="status">
+          <span>Transcript ready</span>
+          <button className="tiny-button" onClick={openSavePanel} type="button">
+            Open Save Panel
+          </button>
+          <button className="tiny-button" onClick={() => setTranscriptReadyVisible(false)} type="button">
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {savePanelOpen ? (
+        <div className="save-panel-backdrop" role="presentation">
+          <section aria-label="Saved transcript sessions" aria-modal="true" className="save-panel" role="dialog">
+            <div className="save-panel-header">
+              <h2>Transcripts</h2>
+              <button className="tiny-button" onClick={() => setSavePanelOpen(false)} type="button">
+                Close
+              </button>
+            </div>
+
+            {transcriptSessions.length ? (
+              <div className="session-list">
+                {transcriptSessions.map((session) => {
+                  const finalSegments = getSessionFinalSegments(session);
+
+                  return (
+                    <div className="session-row" key={session.id}>
+                      <div className="session-meta">
+                        <span>{formatSessionTimeRange(session)}</span>
+                        <span>{formatDuration(session.startedAt, session.stoppedAt)}</span>
+                        <span>{getProviderLabel(session.provider)}</span>
+                        <span>{finalSegments.length} segments</span>
+                        {session.downloaded ? <span>Downloaded</span> : null}
+                      </div>
+                      <div className="session-actions">
+                        <button className="tiny-button" onClick={() => downloadTranscriptSession(session)} type="button">
+                          Download
+                        </button>
+                        <button className="tiny-button danger-outline" onClick={() => deleteTranscriptSession(session.id)} type="button">
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="empty-session-message">No stopped transcript sessions yet.</p>
+            )}
+          </section>
+        </div>
+      ) : null}
 
       <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption font size controls">
         <label className="font-control" title="English caption font size">
@@ -1435,10 +1781,10 @@ export default function Home() {
               captionFontSizes={captionFontSizes}
               captions={captions}
               displayMode={displayMode}
+              focusSegments={focusSegments}
               onClose={closeFloatingWindow}
               singleFallbackCaption={waitingTranslationText}
               sourceLanguage={sourceLanguage}
-              translationCaptions={translationCaptions}
             />,
             floatingContainer
           )
@@ -1451,25 +1797,27 @@ type FloatingCaptionWindowProps = {
   captionFontSizes: CaptionFontSizeMap;
   captions: CaptionMap;
   displayMode: DisplayMode;
+  focusSegments: FocusTranscriptSegment[];
   onClose: () => void;
   singleFallbackCaption: string;
   sourceLanguage: TargetLanguage;
-  translationCaptions: CaptionMap;
 };
 
 function FloatingCaptionWindow({
   captionFontSizes,
   captions,
   displayMode,
+  focusSegments,
   onClose,
   singleFallbackCaption,
   sourceLanguage,
-  translationCaptions,
 }: FloatingCaptionWindowProps) {
-  const singleTargetLanguage: TargetLanguage = sourceLanguage === "zh" ? "en" : "zh";
-  const singleTarget = TARGETS.find((target) => target.code === singleTargetLanguage) ?? TARGETS[0];
+  const singleTargetLanguage = getFocusTargetLanguage(sourceLanguage);
+  const latestFocusSegment = focusSegments[focusSegments.length - 1];
+  const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
+  const focusTarget = TARGETS.find((target) => target.code === focusPanelLanguage) ?? TARGETS[0];
   const singleCaption = getFloatingCaptionText(
-    translationCaptions[singleTargetLanguage],
+    focusSegments.map((segment) => segment.text).join(" "),
     singleFallbackCaption
   );
   const floatingStyle: FloatingCaptionStyle = {
@@ -1481,7 +1829,7 @@ function FloatingCaptionWindow({
     <div className="floating-caption-shell" style={floatingStyle}>
       <div className="floating-caption-topbar">
         <span className="floating-caption-title">
-          {displayMode === "dual" ? "Split View" : `${singleTarget.label} - Focus View`}
+          {displayMode === "dual" ? "Split View" : `${focusTarget.label} - Focus View`}
         </span>
         <button className="floating-close-button" onClick={onClose} title="Close floating captions" type="button">
           Close
@@ -1500,9 +1848,9 @@ function FloatingCaptionWindow({
           </div>
         ) : (
           <section
-            className={`floating-caption-card floating-caption-card-${singleTargetLanguage} floating-caption-card-focus`}
+            className={`floating-caption-card floating-caption-card-${focusPanelLanguage} floating-caption-card-focus`}
           >
-            <span className="floating-language-label">{singleTarget.label}</span>
+            <span className="floating-language-label">{focusTarget.label}</span>
             <p>{singleCaption}</p>
           </section>
         )}
