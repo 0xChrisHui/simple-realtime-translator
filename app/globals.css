@@ -434,19 +434,26 @@ select {
 }
 
 .single-caption-scroll {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
+  align-items: center;
+  display: grid;
+  overflow: hidden;
+  padding-right: 0;
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
 }
 
 .single-caption-scroll-placeholder {
-  justify-content: center;
+  align-items: center;
 }
 
 .caption-panel .single-caption-placeholder {
   padding-bottom: 0;
   text-align: left;
   width: 100%;
+}
+
+.single-caption-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .caption-scroll::-webkit-scrollbar {
@@ -484,8 +491,10 @@ select {
   display: flex;
   flex-direction: column;
   gap: 0.32em;
-  justify-content: flex-end;
-  min-height: 100%;
+  justify-content: center;
+  max-height: 100%;
+  overflow: hidden;
+  width: 100%;
 }
 
 .caption-panel .focus-segment {
