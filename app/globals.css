@@ -59,13 +59,13 @@ select {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
-  height: 46px;
+  height: 38px;
   justify-content: flex-end;
   max-width: none;
   opacity: 0.32;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 8px 0;
+  padding: 6px 0;
   position: fixed;
   right: 8px;
   scrollbar-width: none;
@@ -96,7 +96,7 @@ select {
   flex: 0 0 auto;
   font-weight: 700;
   gap: 7px;
-  height: 30px;
+  height: 26px;
   min-width: 0;
   padding: 0 10px;
 }
@@ -113,7 +113,7 @@ select {
   font-size: 0.72rem;
   font-weight: 800;
   gap: 6px;
-  height: 30px;
+  height: 26px;
   min-width: 0;
   padding: 0 8px;
   text-transform: uppercase;
@@ -131,13 +131,13 @@ select {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 2px;
-  height: 30px;
-  padding: 2px;
+  height: 26px;
+  padding: 1px;
 }
 
 .switch-control .segmented-switch {
   border: 0;
-  height: 26px;
+  height: 22px;
   margin-right: -4px;
   padding: 1px;
 }
@@ -152,7 +152,7 @@ select {
   display: inline-flex;
   font-size: 0.74rem;
   font-weight: 850;
-  height: 24px;
+  height: 20px;
   justify-content: center;
   letter-spacing: 0;
   min-width: 56px;
@@ -199,7 +199,7 @@ select {
   font-size: 0.72rem;
   font-weight: 800;
   gap: 6px;
-  height: 30px;
+  height: 26px;
   min-width: 0;
   padding: 0 8px;
   text-transform: uppercase;
@@ -211,7 +211,7 @@ select {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 750;
-  height: 28px;
+  height: 24px;
   max-width: clamp(88px, 14vw, 180px);
   min-width: 72px;
   outline: none;
@@ -234,7 +234,7 @@ select {
   cursor: pointer;
   font-size: 0.78rem;
   font-weight: 750;
-  height: 28px;
+  height: 24px;
   max-width: clamp(120px, 18vw, 220px);
   min-width: 86px;
   outline: none;
@@ -329,7 +329,7 @@ select {
   flex: 0 0 auto;
   font-size: 0.76rem;
   font-weight: 800;
-  height: 30px;
+  height: 26px;
   justify-content: center;
   min-width: 34px;
   padding: 0 9px;
