@@ -437,6 +437,7 @@ select {
   align-items: center;
   display: grid;
   overflow: hidden;
+  overflow: clip;
   padding-right: 0;
   scrollbar-gutter: auto;
   scrollbar-width: none;
@@ -488,12 +489,14 @@ select {
 }
 
 .focus-timeline {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 0.32em;
-  justify-content: center;
+  justify-content: flex-end;
   max-height: 100%;
   overflow: hidden;
+  padding: clamp(8px, 1svh, 16px) 0 clamp(18px, 2.5svh, 32px);
   width: 100%;
 }
 

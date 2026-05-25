@@ -1661,13 +1661,6 @@ export default function Home() {
               className={`caption-scroll single-caption-scroll ${
                 focusSegments.length ? "" : "single-caption-scroll-placeholder"
               }`}
-              ref={(element) => {
-                if (element) {
-                  captionScrollerRefs.current[focusPanelLanguage] = element;
-                } else {
-                  delete captionScrollerRefs.current[focusPanelLanguage];
-                }
-              }}
             >
               {focusSegments.length ? (
                 <div className="focus-timeline">
