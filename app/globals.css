@@ -445,7 +445,7 @@ select {
 
 .caption-panel .single-caption-placeholder {
   padding-bottom: 0;
-  text-align: center;
+  text-align: left;
   width: 100%;
 }
 
