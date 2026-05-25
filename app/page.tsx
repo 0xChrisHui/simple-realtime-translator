@@ -1595,7 +1595,7 @@ export default function Home() {
             title="Show English and Chinese captions together"
             type="button"
           >
-            Split View
+            Split
           </button>
           <button
             aria-pressed={displayMode === "single"}
@@ -1604,7 +1604,7 @@ export default function Home() {
             title="Show one focused translation based on the spoken language"
             type="button"
           >
-            Focus View
+            Focus
           </button>
         </div>
 
