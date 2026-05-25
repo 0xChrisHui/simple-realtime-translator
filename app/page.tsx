@@ -105,8 +105,8 @@ const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number> = { en
 const DISPLAY_CAPTION_MAX_CHARS = 4000;
 const FOCUS_TIMELINE_MAX_SEGMENTS = 32;
 const FOCUS_SEGMENT_MAX_CHARS = 900;
-const MISSING_OPENAI_API_KEY_CAPTION = "Please enter your\nAPI key";
-const MISSING_OPENAI_API_KEY_MESSAGE = "Please enter your OpenAI API key.";
+const MISSING_OPENAI_API_KEY_CAPTION = "请输入你的 API key\nPlease enter your API key";
+const MISSING_OPENAI_API_KEY_MESSAGE = "请输入你的 OpenAI API key / Please enter your OpenAI API key.";
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
@@ -1658,7 +1658,9 @@ export default function Home() {
               <span>{focusTarget.label}</span>
             </div>
             <div
-              className="caption-scroll single-caption-scroll"
+              className={`caption-scroll single-caption-scroll ${
+                focusSegments.length ? "" : "single-caption-scroll-placeholder"
+              }`}
               ref={(element) => {
                 if (element) {
                   captionScrollerRefs.current[focusPanelLanguage] = element;
@@ -1681,7 +1683,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p>{waitingTranslationText}</p>
+                <p className="single-caption-placeholder">{waitingTranslationText}</p>
               )}
             </div>
           </article>

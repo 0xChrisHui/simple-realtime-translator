@@ -439,6 +439,16 @@ select {
   justify-content: flex-end;
 }
 
+.single-caption-scroll-placeholder {
+  justify-content: center;
+}
+
+.caption-panel .single-caption-placeholder {
+  padding-bottom: 0;
+  text-align: center;
+  width: 100%;
+}
+
 .caption-scroll::-webkit-scrollbar {
   width: 8px;
 }
