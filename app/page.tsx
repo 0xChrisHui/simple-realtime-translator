@@ -75,6 +75,7 @@ type TranscriptSession = {
   stoppedAt: number;
   provider: ApiProvider;
   segments: FocusTranscriptSegment[];
+  transcriptText: CaptionMap;
   downloaded?: boolean;
 };
 type TranscriptSessionStatus = "draft" | "completed" | "recovered";
@@ -102,7 +103,8 @@ const TARGETS: Array<{ code: TargetLanguage; label: string; placeholder: string 
 const INPUT_TRANSCRIPT_TARGET: TargetLanguage = "zh";
 const DEFAULT_CAPTION_FONT_SIZES: CaptionFontSizeMap = { en: 60, zh: 70 };
 const MIN_CAPTION_FONT_SIZE = 24;
-const MAX_CAPTION_FONT_SIZE = 180;
+const SPLIT_CAPTION_TARGET_LINES: Record<TargetLanguage, number> = { en: 4, zh: 3 };
+const SPLIT_CAPTION_LINE_HEIGHT_RATIO: Record<TargetLanguage, number> = { en: 1.08, zh: 1.2 };
 const SOURCE_LANGUAGE_SWITCH_DELAY_MS = 2500;
 const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
 const SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS = 2;
@@ -446,11 +448,6 @@ function formatTimestampForText(date: Date) {
   )}:${pad(date.getSeconds())}`;
 }
 
-function formatTimeOfDay(date: Date) {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 function formatSessionTimeRange(session: TranscriptSession) {
   const start = new Date(session.startedAt);
   const stop = new Date(getTranscriptSessionEndTime(session));
@@ -471,16 +468,48 @@ function formatDuration(startedAt: number, stoppedAt: number) {
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
-function getProviderLabel(provider: ApiProvider) {
-  return provider === "soniox" ? "Soniox" : "OpenAI";
-}
-
 function getSessionTextSegments(session: TranscriptSession) {
   return session.segments.filter((segment) => normalizeTranscriptText(segment.text));
 }
 
+function cloneCaptionMap(value: CaptionMap): CaptionMap {
+  return {
+    en: normalizeTranscriptText(value.en),
+    zh: normalizeTranscriptText(value.zh),
+  };
+}
+
+function readTranscriptTextMap(value: unknown): CaptionMap {
+  if (!isRecord(value)) return createEmptyCaptionMap();
+
+  return {
+    en: typeof value.en === "string" ? normalizeTranscriptText(value.en) : "",
+    zh: typeof value.zh === "string" ? normalizeTranscriptText(value.zh) : "",
+  };
+}
+
+function createTranscriptTextFromSegments(segments: FocusTranscriptSegment[]) {
+  return segments.reduce<CaptionMap>((transcriptText, segment) => {
+    const text = normalizeTranscriptText(segment.text);
+    if (!text) return transcriptText;
+
+    return {
+      ...transcriptText,
+      [segment.targetLanguage]: appendSavedCaptionDelta(transcriptText[segment.targetLanguage], text),
+    };
+  }, createEmptyCaptionMap());
+}
+
+function getSessionTranscriptText(session: TranscriptSession): CaptionMap {
+  const transcriptText = cloneCaptionMap(session.transcriptText);
+  if (transcriptText.en || transcriptText.zh) return transcriptText;
+
+  return createTranscriptTextFromSegments(getSessionTextSegments(session));
+}
+
 function hasTranscriptText(session: TranscriptSession) {
-  return getSessionTextSegments(session).length > 0;
+  const transcriptText = getSessionTranscriptText(session);
+  return Boolean(transcriptText.en || transcriptText.zh);
 }
 
 function getTranscriptSessionEndTime(session: TranscriptSession) {
@@ -490,18 +519,22 @@ function getTranscriptSessionEndTime(session: TranscriptSession) {
 }
 
 function formatTranscriptSession(session: TranscriptSession) {
-  const lines = getSessionTextSegments(session).map((segment) => {
-    return `[${formatTimeOfDay(new Date(segment.startedAt))}] ${segment.text.trim()}`;
-  });
+  const transcriptText = getSessionTranscriptText(session);
 
   return [
     "Simple Realtime Translator",
     `Session: ${formatTimestampForText(new Date(session.startedAt))} - ${formatTimestampForText(
       new Date(getTranscriptSessionEndTime(session))
     )}`,
-    `Provider: ${getProviderLabel(session.provider)}`,
     "",
-    ...lines,
+    "如果需要中文，请翻到页面下方",
+    "If you need Chinese, please refer to the second half of the document.",
+    "",
+    "English",
+    transcriptText.en,
+    "",
+    "Chinese",
+    transcriptText.zh,
     "",
   ].join("\n");
 }
@@ -565,6 +598,9 @@ function normalizeStoredTranscriptSession(value: unknown): StoredTranscriptSessi
   const status = isTranscriptSessionStatus(value.status) ? value.status : stoppedAt ? "completed" : "draft";
   const updatedAt = readTimestamp(value.updatedAt) || stoppedAt || startedAt;
   const segments = Array.isArray(value.segments) ? cloneTranscriptSegments(value.segments) : [];
+  const storedTranscriptText = readTranscriptTextMap(value.transcriptText);
+  const transcriptText =
+    storedTranscriptText.en || storedTranscriptText.zh ? storedTranscriptText : createTranscriptTextFromSegments(segments);
 
   if (!id || !startedAt || !provider) return null;
 
@@ -574,6 +610,7 @@ function normalizeStoredTranscriptSession(value: unknown): StoredTranscriptSessi
     stoppedAt,
     provider,
     segments,
+    transcriptText,
     downloaded: value.downloaded === true,
     status,
     updatedAt,
@@ -593,6 +630,7 @@ function createStoredTranscriptSnapshot(
     status,
     updatedAt,
     segments: cloneTranscriptSegments(session.segments),
+    transcriptText: getSessionTranscriptText(session),
   };
 }
 
@@ -737,7 +775,16 @@ async function clearStoredTranscriptSessions(options: { preserveSessionId?: stri
 }
 
 function clampCaptionFontSize(value: number) {
-  return Math.min(MAX_CAPTION_FONT_SIZE, Math.max(MIN_CAPTION_FONT_SIZE, value));
+  return Math.max(MIN_CAPTION_FONT_SIZE, value);
+}
+
+function roundCaptionFontSize(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function formatCaptionFontSizeInput(value: number) {
+  const rounded = roundCaptionFontSize(value);
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 function getErrorMessage(data: unknown, fallback: string): string {
@@ -827,6 +874,76 @@ export default function Home() {
   const transcriptSaveLoopRef = useRef<Promise<void> | null>(null);
   const transcriptStorageErrorShownRef = useRef(false);
   const storedTranscriptSessionsLoadedRef = useRef(false);
+  const manualCaptionFontSizeOverridesRef = useRef<Record<TargetLanguage, boolean>>({ en: false, zh: false });
+
+  const setRealtimeStatus = useCallback((nextStatus: Status) => {
+    statusRef.current = nextStatus;
+    setStatus(nextStatus);
+  }, []);
+
+  const autoFitSplitCaptionFontSizes = useCallback(() => {
+    if (displayMode !== "dual") return;
+
+    const fittedSizes: Partial<CaptionFontSizeMap> = {};
+
+    TARGETS.forEach(({ code }) => {
+      if (manualCaptionFontSizeOverridesRef.current[code]) return;
+
+      const scroller = captionScrollerRefs.current[code];
+      const paragraph = scroller?.querySelector("p");
+      if (!scroller || !paragraph) return;
+
+      const paragraphStyle = window.getComputedStyle(paragraph);
+      const currentFontSize = Number.parseFloat(paragraphStyle.fontSize) || DEFAULT_CAPTION_FONT_SIZES[code];
+      const computedLineHeight = Number.parseFloat(paragraphStyle.lineHeight);
+      const lineHeightRatio =
+        Number.isFinite(computedLineHeight) && computedLineHeight > 0 && currentFontSize > 0
+          ? computedLineHeight / currentFontSize
+          : SPLIT_CAPTION_LINE_HEIGHT_RATIO[code];
+      const paddingTop = Number.parseFloat(paragraphStyle.paddingTop) || 0;
+      const paddingBottom = Number.parseFloat(paragraphStyle.paddingBottom) || 0;
+      const availableHeight = scroller.clientHeight - paddingTop - paddingBottom;
+      const targetLines = SPLIT_CAPTION_TARGET_LINES[code];
+
+      if (availableHeight <= 0 || lineHeightRatio <= 0) return;
+
+      fittedSizes[code] = roundCaptionFontSize(clampCaptionFontSize(availableHeight / (targetLines * lineHeightRatio)));
+    });
+
+    if (!Object.keys(fittedSizes).length) return;
+
+    setCaptionFontSizes((previous) => {
+      const next = { ...previous };
+      let changed = false;
+
+      TARGETS.forEach(({ code }) => {
+        const fittedSize = fittedSizes[code];
+        if (!fittedSize || Math.abs(previous[code] - fittedSize) < 0.05) return;
+
+        next[code] = fittedSize;
+        changed = true;
+      });
+
+      return changed ? next : previous;
+    });
+    setCaptionFontSizeInputs((previous) => {
+      const next = { ...previous };
+      let changed = false;
+
+      TARGETS.forEach(({ code }) => {
+        const fittedSize = fittedSizes[code];
+        if (!fittedSize) return;
+
+        const fittedInput = formatCaptionFontSizeInput(fittedSize);
+        if (previous[code] === fittedInput) return;
+
+        next[code] = fittedInput;
+        changed = true;
+      });
+
+      return changed ? next : previous;
+    });
+  }, [displayMode]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -838,12 +955,30 @@ export default function Home() {
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [captions, displayMode, focusSegments, translationCaptions]);
+  }, [captionFontSizes, captions, displayMode, focusSegments, translationCaptions]);
 
-  const setRealtimeStatus = useCallback((nextStatus: Status) => {
-    statusRef.current = nextStatus;
-    setStatus(nextStatus);
-  }, []);
+  useEffect(() => {
+    if (displayMode !== "dual") return;
+
+    let frame: number | null = null;
+    const scheduleAutoFit = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        autoFitSplitCaptionFontSizes();
+      });
+    };
+
+    scheduleAutoFit();
+    window.addEventListener("resize", scheduleAutoFit);
+    window.visualViewport?.addEventListener("resize", scheduleAutoFit);
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", scheduleAutoFit);
+      window.visualViewport?.removeEventListener("resize", scheduleAutoFit);
+    };
+  }, [autoFitSplitCaptionFontSizes, displayMode]);
 
   const notifyTranscriptStorageError = useCallback(() => {
     if (transcriptStorageErrorShownRef.current) return;
@@ -930,6 +1065,29 @@ export default function Home() {
       }, TRANSCRIPT_AUTOSAVE_DELAY_MS);
     },
     [saveActiveTranscriptSnapshot]
+  );
+
+  const appendSessionTranscriptText = useCallback(
+    (language: TargetLanguage, delta: string, reason: "final" | "partial" = "partial") => {
+      const activeSession = activeTranscriptSessionRef.current;
+      const nextText = appendSavedCaptionDelta(savedCaptionsRef.current[language], delta);
+
+      savedCaptionsRef.current = {
+        ...savedCaptionsRef.current,
+        [language]: nextText,
+      };
+
+      if (activeSession) {
+        activeSession.transcriptText = {
+          ...activeSession.transcriptText,
+          [language]: nextText,
+        };
+        scheduleActiveTranscriptAutosave(reason);
+      }
+
+      return nextText;
+    },
+    [scheduleActiveTranscriptAutosave]
   );
 
   const deleteStoredTranscriptSessionSafely = useCallback(
@@ -1161,6 +1319,7 @@ export default function Home() {
       stoppedAt: 0,
       provider: apiProviderRef.current,
       segments: [],
+      transcriptText: createEmptyCaptionMap(),
       status: "draft",
       updatedAt: now,
     };
@@ -1202,7 +1361,9 @@ export default function Home() {
     activeTranscriptSessionRef.current = null;
     focusPartialSegmentIdsRef.current = {};
 
-    if (!finalSegments.length) {
+    const transcriptText = cloneCaptionMap(activeSession.transcriptText);
+
+    if (!transcriptText.en && !transcriptText.zh) {
       await deleteStoredTranscriptSessionSafely(activeSession.id);
       return;
     }
@@ -1211,6 +1372,7 @@ export default function Home() {
       ...activeSession,
       stoppedAt,
       segments: finalSegments,
+      transcriptText,
       status: "completed",
       updatedAt: stoppedAt,
     };
@@ -1441,10 +1603,7 @@ export default function Home() {
           const event = JSON.parse(data) as RealtimeEvent;
 
           if (event.type === "session.output_transcript.delta" && typeof event.delta === "string") {
-            savedCaptionsRef.current[targetLanguage] = appendSavedCaptionDelta(
-              savedCaptionsRef.current[targetLanguage],
-              event.delta
-            );
+            appendSessionTranscriptText(targetLanguage, event.delta);
             appendFocusTranslationDelta(targetLanguage, event.delta);
             setTranslationCaptions((previous) => ({
               ...previous,
@@ -1468,7 +1627,7 @@ export default function Home() {
             const inputLanguage = detectInputLanguage(event.delta, lastInputLanguageRef.current);
             lastInputLanguageRef.current = inputLanguage;
             trackSourceLanguage(inputLanguage, event.delta);
-            savedCaptionsRef.current[inputLanguage] = appendSavedCaptionDelta(savedCaptionsRef.current[inputLanguage], event.delta);
+            appendSessionTranscriptText(inputLanguage, event.delta);
             setCaptions((previous) => ({
               ...previous,
               [inputLanguage]: appendCaptionDelta(previous[inputLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
@@ -1523,6 +1682,7 @@ export default function Home() {
     },
     [
       appendFocusTranslationDelta,
+      appendSessionTranscriptText,
       cleanupRealtime,
       createClientSecret,
       finalizeCurrentFocusSegments,
@@ -1652,7 +1812,7 @@ export default function Home() {
 
         if (token.is_final) {
           if (finalTokenKey) sonioxFinalTokenKeysRef.current.add(finalTokenKey);
-          savedCaptionsRef.current[language] = appendSavedCaptionDelta(savedCaptionsRef.current[language], token.text);
+          appendSessionTranscriptText(language, token.text, "final");
           if (translationStatus === "translation") {
             appendFocusTranslationDelta(language, token.text);
           }
@@ -1661,7 +1821,13 @@ export default function Home() {
 
       updateSonioxCaptionState();
     },
-    [appendFocusTranslationDelta, trackSourceLanguage, trackSourceLanguageEvidence, updateSonioxCaptionState]
+    [
+      appendFocusTranslationDelta,
+      appendSessionTranscriptText,
+      trackSourceLanguage,
+      trackSourceLanguageEvidence,
+      updateSonioxCaptionState,
+    ]
   );
 
   const startSonioxTranslation = useCallback(
@@ -1879,6 +2045,7 @@ export default function Home() {
   useEffect(() => closeFloatingWindow, [closeFloatingWindow]);
 
   const handleCaptionFontSizeChange = useCallback((language: TargetLanguage, value: string) => {
+    manualCaptionFontSizeOverridesRef.current[language] = true;
     setCaptionFontSizeInputs((previous) => ({ ...previous, [language]: value }));
 
     const nextSize = Number(value);
@@ -1889,7 +2056,10 @@ export default function Home() {
 
   const commitCaptionFontSize = useCallback(
     (language: TargetLanguage) => {
-      setCaptionFontSizeInputs((previous) => ({ ...previous, [language]: String(captionFontSizes[language]) }));
+      setCaptionFontSizeInputs((previous) => ({
+        ...previous,
+        [language]: formatCaptionFontSizeInput(captionFontSizes[language]),
+      }));
     },
     [captionFontSizes]
   );
@@ -2166,10 +2336,10 @@ export default function Home() {
         <div className="transcript-ready-banner" role="status">
           <span>Transcript ready</span>
           <button className="tiny-button" onClick={openSavePanel} type="button">
-            Open Save Panel
+            Open
           </button>
-          <button className="tiny-button" onClick={() => setTranscriptReadyVisible(false)} type="button">
-            Dismiss
+          <button className="tiny-button" onClick={() => setTranscriptReadyVisible(false)} title="Dismiss" type="button">
+            ×
           </button>
         </div>
       ) : null}
@@ -2237,10 +2407,10 @@ export default function Home() {
             aria-label="English caption font size"
             className="font-input"
             inputMode="numeric"
-            max={MAX_CAPTION_FONT_SIZE}
             min={MIN_CAPTION_FONT_SIZE}
             onBlur={() => commitCaptionFontSize("en")}
             onChange={(event) => handleCaptionFontSizeChange("en", event.currentTarget.value)}
+            step="0.1"
             type="number"
             value={captionFontSizeInputs.en}
           />
@@ -2252,10 +2422,10 @@ export default function Home() {
             aria-label="Chinese caption font size"
             className="font-input"
             inputMode="numeric"
-            max={MAX_CAPTION_FONT_SIZE}
             min={MIN_CAPTION_FONT_SIZE}
             onBlur={() => commitCaptionFontSize("zh")}
             onChange={(event) => handleCaptionFontSizeChange("zh", event.currentTarget.value)}
+            step="0.1"
             type="number"
             value={captionFontSizeInputs.zh}
           />

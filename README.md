@@ -82,7 +82,7 @@ Soniox currently only provides speech-to-text translated captions in this app. I
 
 Transcript sessions are autosaved to IndexedDB in the current browser for the current site. Clicking `Stop` marks the session complete; if the page is closed or refreshed mid-session, the next page load moves the saved draft into the Save panel as `Recovered`.
 
-The Save panel supports `Download`, `Delete`, and `Clear All`. Download creates a `.txt` file on demand and does not remove the saved record. Clearing browser site data, using private browsing, switching browsers, or changing domains can make local transcript records unavailable.
+The Save panel supports `Download`, `Delete`, and `Clear All`. Download creates a `.txt` file on demand with an English section followed by a Chinese section, and does not remove the saved record. Clearing browser site data, using private browsing, switching browsers, or changing domains can make local transcript records unavailable.
 
 ## Notes
 

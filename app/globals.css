@@ -20,6 +20,11 @@
   --danger: #ff4d4f;
   --success: #23d18b;
   --warning: #f6c343;
+  --split-gap: 6px;
+  --split-header-gap: 10px;
+  --split-panel-padding-bottom: 14px;
+  --split-panel-padding-top: 14px;
+  --split-stage-padding-y: 8px;
 }
 
 * {
@@ -373,9 +378,9 @@ select {
 
 .dual-caption-stage {
   display: grid;
-  gap: clamp(16px, 3svh, 34px);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  padding: clamp(8px, 1.3svh, 14px) 0;
+  gap: var(--split-gap);
+  grid-template-rows: minmax(0, 0.46fr) minmax(0, 0.54fr);
+  padding: var(--split-stage-padding-y) 0;
 }
 
 .single-caption-stage {
@@ -390,6 +395,10 @@ select {
   overflow: hidden;
   padding: 28px 42px;
   position: relative;
+}
+
+.dual-caption-stage .caption-panel {
+  padding: var(--split-panel-padding-top) 42px var(--split-panel-padding-bottom);
 }
 
 .caption-panel::before {
@@ -462,6 +471,10 @@ select {
   scrollbar-width: none;
 }
 
+.dual-caption-stage .caption-header {
+  margin-bottom: var(--split-header-gap);
+}
+
 .single-caption-scroll-placeholder {
   align-items: center;
 }
@@ -491,7 +504,7 @@ select {
   line-height: 1.08;
   margin: 0;
   overflow-wrap: anywhere;
-  padding: 4px 0 18px;
+  padding: 2px 0 8px;
   text-align: left;
   text-wrap: wrap;
   white-space: pre-line;
@@ -543,21 +556,30 @@ select {
 
 .transcript-ready-banner {
   align-items: center;
-  background: rgba(35, 209, 139, 0.16);
-  border: 1px solid rgba(35, 209, 139, 0.42);
-  border-radius: 8px;
-  bottom: 58px;
+  background: rgba(35, 209, 139, 0.12);
+  border: 1px solid rgba(35, 209, 139, 0.32);
+  border-radius: 6px;
   color: #d8ffe9;
   display: flex;
   flex-wrap: wrap;
-  font-size: 0.86rem;
+  font-size: 0.72rem;
   font-weight: 800;
-  gap: 8px;
-  left: 16px;
+  gap: 4px;
+  opacity: 0.6;
+  right: 8px;
+  top: 32px;
   max-width: calc(100vw - 32px);
-  padding: 8px;
+  padding: 4px 6px;
   position: fixed;
   z-index: 6;
+}
+
+.transcript-ready-banner .tiny-button {
+  border-radius: 5px;
+  font-size: 0.62rem;
+  height: 20px;
+  min-height: 20px;
+  padding: 0 6px;
 }
 
 .save-panel-backdrop {
@@ -694,9 +716,19 @@ select {
     padding: 22px 26px;
   }
 
+  .dual-caption-stage .caption-panel {
+    padding: var(--split-panel-padding-top) 26px var(--split-panel-padding-bottom);
+  }
+
 }
 
 @media (max-width: 720px) {
+  :root {
+    --split-header-gap: 8px;
+    --split-panel-padding-bottom: 12px;
+    --split-panel-padding-top: 42px;
+  }
+
   .control-strip {
     left: auto;
     max-width: 100vw;
@@ -716,6 +748,10 @@ select {
 
   .caption-panel {
     padding: 48px 14px 14px;
+  }
+
+  .dual-caption-stage .caption-panel {
+    padding: var(--split-panel-padding-top) 14px var(--split-panel-padding-bottom);
   }
 
   .caption-scroll {
