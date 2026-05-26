@@ -597,9 +597,24 @@ select {
   margin: 0;
 }
 
+.save-panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.save-panel-note {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 0;
+  padding: 10px 16px;
+}
+
 .session-list {
   display: grid;
-  max-height: calc(min(78vh, 680px) - 61px);
+  max-height: calc(min(78vh, 680px) - 117px);
   overflow-y: auto;
 }
 
@@ -628,6 +643,10 @@ select {
 
 .session-meta span:first-child {
   color: var(--text);
+}
+
+.session-badge {
+  color: #a7f3d0;
 }
 
 .session-actions {

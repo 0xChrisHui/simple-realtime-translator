@@ -16,7 +16,7 @@ The app is designed for an in-person meeting setup: a laptop captures speech, th
 - Floating captions for presenting slides while keeping subtitles visible
 - Manual audio input selection for microphones or system-provided audio devices
 - Adjustable English and Chinese caption font sizes
-- Local one-click transcript export
+- Local transcript autosave, recovery, and one-click `.txt` export
 - User-provided OpenAI key from the browser, plus user-provided or server-fallback Soniox key
 - Optional public-screen watermark through `NEXT_PUBLIC_WATERMARK_IMAGE`
 
@@ -77,6 +77,12 @@ The microphone audio is sent as a WebRTC track. Translated captions and input tr
 For Soniox, the browser calls `/api/soniox/config` to create a temporary API key. The browser then connects directly to Soniox through the official Web SDK and WebSocket STT API. The long-lived Soniox key is never sent to the browser unless the user typed it into the app themselves.
 
 Soniox currently only provides speech-to-text translated captions in this app. It does not play translated audio or use TTS.
+
+## Local Transcript Storage
+
+Transcript sessions are autosaved to IndexedDB in the current browser for the current site. Clicking `Stop` marks the session complete; if the page is closed or refreshed mid-session, the next page load moves the saved draft into the Save panel as `Recovered`.
+
+The Save panel supports `Download`, `Delete`, and `Clear All`. Download creates a `.txt` file on demand and does not remove the saved record. Clearing browser site data, using private browsing, switching browsers, or changing domains can make local transcript records unavailable.
 
 ## Notes
 

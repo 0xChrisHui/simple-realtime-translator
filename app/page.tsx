@@ -77,6 +77,11 @@ type TranscriptSession = {
   segments: FocusTranscriptSegment[];
   downloaded?: boolean;
 };
+type TranscriptSessionStatus = "draft" | "completed" | "recovered";
+type StoredTranscriptSession = TranscriptSession & {
+  status: TranscriptSessionStatus;
+  updatedAt: number;
+};
 type SonioxCaptionBuffer = {
   finalDisplay: CaptionMap;
   partialDisplay: CaptionMap;
@@ -110,6 +115,11 @@ const MISSING_OPENAI_API_KEY_MESSAGE = "请输入你的 OpenAI API key / Please 
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
+const TRANSCRIPT_DB_NAME = "simple-realtime-translator";
+const TRANSCRIPT_DB_VERSION = 1;
+const TRANSCRIPT_SESSION_STORE = "transcriptSessions";
+const TRANSCRIPT_AUTOSAVE_DELAY_MS = 800;
+const TRANSCRIPT_PARTIAL_CHECKPOINT_MS = 5000;
 const FLOATING_WINDOW_WIDTH = 720;
 const FLOATING_WINDOW_HEIGHT = 360;
 const FLOATING_CAPTION_MAX_CHARS = 420;
@@ -443,7 +453,7 @@ function formatTimeOfDay(date: Date) {
 
 function formatSessionTimeRange(session: TranscriptSession) {
   const start = new Date(session.startedAt);
-  const stop = new Date(session.stoppedAt);
+  const stop = new Date(getTranscriptSessionEndTime(session));
   const pad = (value: number) => String(value).padStart(2, "0");
   const day = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
   return `${day} ${pad(start.getHours())}:${pad(start.getMinutes())}-${pad(stop.getHours())}:${pad(stop.getMinutes())}`;
@@ -465,25 +475,265 @@ function getProviderLabel(provider: ApiProvider) {
   return provider === "soniox" ? "Soniox" : "OpenAI";
 }
 
-function getSessionFinalSegments(session: TranscriptSession) {
-  return session.segments.filter((segment) => segment.final && segment.text.trim());
+function getSessionTextSegments(session: TranscriptSession) {
+  return session.segments.filter((segment) => normalizeTranscriptText(segment.text));
+}
+
+function hasTranscriptText(session: TranscriptSession) {
+  return getSessionTextSegments(session).length > 0;
+}
+
+function getTranscriptSessionEndTime(session: TranscriptSession) {
+  if (session.stoppedAt > 0) return session.stoppedAt;
+
+  return session.segments.reduce((latest, segment) => Math.max(latest, segment.updatedAt || segment.startedAt), session.startedAt);
 }
 
 function formatTranscriptSession(session: TranscriptSession) {
-  const lines = getSessionFinalSegments(session).map((segment) => {
+  const lines = getSessionTextSegments(session).map((segment) => {
     return `[${formatTimeOfDay(new Date(segment.startedAt))}] ${segment.text.trim()}`;
   });
 
   return [
     "Simple Realtime Translator",
     `Session: ${formatTimestampForText(new Date(session.startedAt))} - ${formatTimestampForText(
-      new Date(session.stoppedAt)
+      new Date(getTranscriptSessionEndTime(session))
     )}`,
     `Provider: ${getProviderLabel(session.provider)}`,
     "",
     ...lines,
     "",
   ].join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function readTimestamp(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function isTargetLanguage(value: unknown): value is TargetLanguage {
+  return value === "en" || value === "zh";
+}
+
+function isApiProvider(value: unknown): value is ApiProvider {
+  return value === "openai" || value === "soniox";
+}
+
+function isTranscriptSessionStatus(value: unknown): value is TranscriptSessionStatus {
+  return value === "draft" || value === "completed" || value === "recovered";
+}
+
+function normalizeStoredTranscriptSegment(value: unknown): FocusTranscriptSegment | null {
+  if (!isRecord(value)) return null;
+
+  const id = typeof value.id === "string" ? value.id : "";
+  const sourceLanguage = isTargetLanguage(value.sourceLanguage) ? value.sourceLanguage : null;
+  const targetLanguage = isTargetLanguage(value.targetLanguage) ? value.targetLanguage : null;
+  const text = typeof value.text === "string" ? normalizeTranscriptText(value.text) : "";
+  const startedAt = readTimestamp(value.startedAt);
+  const updatedAt = readTimestamp(value.updatedAt) || startedAt;
+
+  if (!id || !sourceLanguage || !targetLanguage || !text || !startedAt) return null;
+
+  return {
+    id,
+    sourceLanguage,
+    targetLanguage,
+    text,
+    final: value.final === true,
+    startedAt,
+    updatedAt,
+  };
+}
+
+function cloneTranscriptSegments(segments: unknown[]) {
+  return segments
+    .map(normalizeStoredTranscriptSegment)
+    .filter((segment): segment is FocusTranscriptSegment => Boolean(segment));
+}
+
+function normalizeStoredTranscriptSession(value: unknown): StoredTranscriptSession | null {
+  if (!isRecord(value)) return null;
+
+  const id = typeof value.id === "string" ? value.id : "";
+  const startedAt = readTimestamp(value.startedAt);
+  const stoppedAt = readTimestamp(value.stoppedAt);
+  const provider = isApiProvider(value.provider) ? value.provider : null;
+  const status = isTranscriptSessionStatus(value.status) ? value.status : stoppedAt ? "completed" : "draft";
+  const updatedAt = readTimestamp(value.updatedAt) || stoppedAt || startedAt;
+  const segments = Array.isArray(value.segments) ? cloneTranscriptSegments(value.segments) : [];
+
+  if (!id || !startedAt || !provider) return null;
+
+  return {
+    id,
+    startedAt,
+    stoppedAt,
+    provider,
+    segments,
+    downloaded: value.downloaded === true,
+    status,
+    updatedAt,
+  };
+}
+
+function createStoredTranscriptSnapshot(
+  session: StoredTranscriptSession,
+  status: TranscriptSessionStatus = session.status,
+  updatedAt = Date.now()
+): StoredTranscriptSession {
+  const stoppedAt = status === "draft" ? session.stoppedAt : session.stoppedAt || updatedAt;
+
+  return {
+    ...session,
+    stoppedAt,
+    status,
+    updatedAt,
+    segments: cloneTranscriptSegments(session.segments),
+  };
+}
+
+function sortStoredTranscriptSessions(sessions: StoredTranscriptSession[]) {
+  return [...sessions].sort((a, b) => {
+    if (a.status !== b.status) {
+      if (a.status === "recovered") return -1;
+      if (b.status === "recovered") return 1;
+    }
+
+    return (b.updatedAt || b.startedAt) - (a.updatedAt || a.startedAt);
+  });
+}
+
+function openTranscriptDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    if (typeof window === "undefined" || !window.indexedDB) {
+      reject(new Error("IndexedDB is not available."));
+      return;
+    }
+
+    const request = window.indexedDB.open(TRANSCRIPT_DB_NAME, TRANSCRIPT_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(TRANSCRIPT_SESSION_STORE)) {
+        db.createObjectStore(TRANSCRIPT_SESSION_STORE, { keyPath: "id" });
+      }
+    };
+
+    request.onblocked = () => reject(new Error("Transcript database upgrade is blocked by another tab."));
+    request.onerror = () => reject(request.error ?? new Error("Could not open transcript database."));
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+  });
+}
+
+async function loadStoredTranscriptSessions() {
+  const db = await openTranscriptDb();
+
+  return new Promise<StoredTranscriptSession[]>((resolve, reject) => {
+    const transaction = db.transaction(TRANSCRIPT_SESSION_STORE, "readonly");
+    const request = transaction.objectStore(TRANSCRIPT_SESSION_STORE).getAll();
+
+    request.onsuccess = () => {
+      const sessions = (request.result as unknown[])
+        .map(normalizeStoredTranscriptSession)
+        .filter((session): session is StoredTranscriptSession => Boolean(session));
+      resolve(sortStoredTranscriptSessions(sessions));
+    };
+    request.onerror = () => reject(request.error ?? new Error("Could not load transcript sessions."));
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Could not load transcript sessions."));
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Transcript session load was aborted."));
+    };
+  });
+}
+
+async function saveStoredTranscriptSession(session: StoredTranscriptSession) {
+  const db = await openTranscriptDb();
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(TRANSCRIPT_SESSION_STORE, "readwrite");
+    transaction.objectStore(TRANSCRIPT_SESSION_STORE).put(session);
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Could not save transcript session."));
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Transcript session save was aborted."));
+    };
+  });
+}
+
+async function deleteStoredTranscriptSession(sessionId: string) {
+  const db = await openTranscriptDb();
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(TRANSCRIPT_SESSION_STORE, "readwrite");
+    transaction.objectStore(TRANSCRIPT_SESSION_STORE).delete(sessionId);
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Could not delete transcript session."));
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Transcript session delete was aborted."));
+    };
+  });
+}
+
+async function clearStoredTranscriptSessions(options: { preserveSessionId?: string } = {}) {
+  const db = await openTranscriptDb();
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(TRANSCRIPT_SESSION_STORE, "readwrite");
+    const store = transaction.objectStore(TRANSCRIPT_SESSION_STORE);
+
+    if (!options.preserveSessionId) {
+      store.clear();
+    } else {
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (cursor.key !== options.preserveSessionId) cursor.delete();
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error ?? new Error("Could not clear transcript sessions."));
+    }
+
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Could not clear transcript sessions."));
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Transcript session clear was aborted."));
+    };
+  });
 }
 
 function clampCaptionFontSize(value: number) {
@@ -530,7 +780,7 @@ export default function Home() {
   const [captions, setCaptions] = useState<CaptionMap>({ en: "", zh: "" });
   const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>({ en: "", zh: "" });
   const [focusSegments, setFocusSegments] = useState<FocusTranscriptSegment[]>([]);
-  const [transcriptSessions, setTranscriptSessions] = useState<TranscriptSession[]>([]);
+  const [transcriptSessions, setTranscriptSessions] = useState<StoredTranscriptSession[]>([]);
   const [transcriptReadyVisible, setTranscriptReadyVisible] = useState(false);
   const [savePanelOpen, setSavePanelOpen] = useState(false);
   const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
@@ -569,8 +819,14 @@ export default function Home() {
   const sourceLanguageSwitchCandidateRef = useRef<SourceLanguageSwitchCandidate | null>(null);
   const lastInputLanguageRef = useRef<TargetLanguage>("en");
   const savedCaptionsRef = useRef<CaptionMap>({ en: "", zh: "" });
-  const activeTranscriptSessionRef = useRef<TranscriptSession | null>(null);
+  const activeTranscriptSessionRef = useRef<StoredTranscriptSession | null>(null);
   const focusPartialSegmentIdsRef = useRef<Partial<Record<TargetLanguage, string>>>({});
+  const transcriptAutosaveTimerRef = useRef<number | null>(null);
+  const transcriptLastPartialCheckpointRef = useRef(0);
+  const pendingTranscriptSavesRef = useRef<Map<string, StoredTranscriptSession>>(new Map());
+  const transcriptSaveLoopRef = useRef<Promise<void> | null>(null);
+  const transcriptStorageErrorShownRef = useRef(false);
+  const storedTranscriptSessionsLoadedRef = useRef(false);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -588,6 +844,165 @@ export default function Home() {
     statusRef.current = nextStatus;
     setStatus(nextStatus);
   }, []);
+
+  const notifyTranscriptStorageError = useCallback(() => {
+    if (transcriptStorageErrorShownRef.current) return;
+
+    transcriptStorageErrorShownRef.current = true;
+    setError(
+      (currentError) =>
+        currentError ||
+        "Transcript autosave is unavailable. Live captions will continue; use Download before closing this page."
+    );
+  }, []);
+
+  const runTranscriptSaveLoop = useCallback(() => {
+    if (transcriptSaveLoopRef.current) return transcriptSaveLoopRef.current;
+
+    const loop = (async () => {
+      while (pendingTranscriptSavesRef.current.size) {
+        const batch = Array.from(pendingTranscriptSavesRef.current.values());
+        pendingTranscriptSavesRef.current.clear();
+
+        for (const session of batch) {
+          try {
+            await saveStoredTranscriptSession(session);
+          } catch (caughtError) {
+            console.warn("Transcript autosave failed", caughtError);
+            notifyTranscriptStorageError();
+          }
+        }
+      }
+    })().finally(() => {
+      transcriptSaveLoopRef.current = null;
+      if (pendingTranscriptSavesRef.current.size) void runTranscriptSaveLoop();
+    });
+
+    transcriptSaveLoopRef.current = loop;
+    return loop;
+  }, [notifyTranscriptStorageError]);
+
+  const queueStoredTranscriptSessionSave = useCallback(
+    (session: StoredTranscriptSession) => {
+      pendingTranscriptSavesRef.current.set(session.id, session);
+      return runTranscriptSaveLoop();
+    },
+    [runTranscriptSaveLoop]
+  );
+
+  const clearTranscriptAutosaveTimer = useCallback(() => {
+    if (transcriptAutosaveTimerRef.current === null) return;
+
+    window.clearTimeout(transcriptAutosaveTimerRef.current);
+    transcriptAutosaveTimerRef.current = null;
+  }, []);
+
+  const saveActiveTranscriptSnapshot = useCallback(
+    (statusOverride?: TranscriptSessionStatus) => {
+      const activeSession = activeTranscriptSessionRef.current;
+      if (!activeSession) return Promise.resolve();
+
+      const snapshot = createStoredTranscriptSnapshot(activeSession, statusOverride ?? activeSession.status);
+      activeSession.status = snapshot.status;
+      activeSession.stoppedAt = snapshot.stoppedAt;
+      activeSession.updatedAt = snapshot.updatedAt;
+
+      return queueStoredTranscriptSessionSave(snapshot);
+    },
+    [queueStoredTranscriptSessionSave]
+  );
+
+  const scheduleActiveTranscriptAutosave = useCallback(
+    (reason: "final" | "partial") => {
+      if (!activeTranscriptSessionRef.current) return;
+
+      const now = Date.now();
+      if (reason === "partial") {
+        if (now - transcriptLastPartialCheckpointRef.current < TRANSCRIPT_PARTIAL_CHECKPOINT_MS) return;
+        transcriptLastPartialCheckpointRef.current = now;
+      }
+
+      if (transcriptAutosaveTimerRef.current !== null) return;
+
+      transcriptAutosaveTimerRef.current = window.setTimeout(() => {
+        transcriptAutosaveTimerRef.current = null;
+        void saveActiveTranscriptSnapshot("draft");
+      }, TRANSCRIPT_AUTOSAVE_DELAY_MS);
+    },
+    [saveActiveTranscriptSnapshot]
+  );
+
+  const deleteStoredTranscriptSessionSafely = useCallback(
+    async (sessionId: string) => {
+      pendingTranscriptSavesRef.current.delete(sessionId);
+
+      const activeSaveLoop = transcriptSaveLoopRef.current;
+      if (activeSaveLoop) await activeSaveLoop;
+
+      try {
+        await deleteStoredTranscriptSession(sessionId);
+      } catch (caughtError) {
+        console.warn("Transcript delete failed", caughtError);
+        notifyTranscriptStorageError();
+      }
+    },
+    [notifyTranscriptStorageError]
+  );
+
+  useEffect(() => {
+    if (storedTranscriptSessionsLoadedRef.current) return;
+
+    storedTranscriptSessionsLoadedRef.current = true;
+    let cancelled = false;
+
+    const restoreStoredTranscriptSessions = async () => {
+      try {
+        const storedSessions = await loadStoredTranscriptSessions();
+        const visibleSessions: StoredTranscriptSession[] = [];
+
+        for (const session of storedSessions) {
+          const normalizedSession = createStoredTranscriptSnapshot(session, session.status, session.updatedAt);
+
+          if (!hasTranscriptText(normalizedSession)) {
+            if (session.status === "draft" || session.status === "recovered") {
+              void deleteStoredTranscriptSession(session.id).catch((caughtError) => {
+                console.warn("Empty transcript cleanup failed", caughtError);
+                notifyTranscriptStorageError();
+              });
+            }
+            continue;
+          }
+
+          if (normalizedSession.status === "draft") {
+            const recoveredSession: StoredTranscriptSession = {
+              ...normalizedSession,
+              stoppedAt: getTranscriptSessionEndTime(normalizedSession),
+              status: "recovered",
+              updatedAt: Date.now(),
+            };
+            visibleSessions.push(recoveredSession);
+            void queueStoredTranscriptSessionSave(recoveredSession);
+            continue;
+          }
+
+          visibleSessions.push(normalizedSession);
+        }
+
+        if (!cancelled) setTranscriptSessions(sortStoredTranscriptSessions(visibleSessions));
+      } catch (caughtError) {
+        console.warn("Transcript restore failed", caughtError);
+        notifyTranscriptStorageError();
+      }
+    };
+
+    void restoreStoredTranscriptSessions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [notifyTranscriptStorageError, queueStoredTranscriptSessionSave]);
+
+  useEffect(() => clearTranscriptAutosaveTimer, [clearTranscriptAutosaveTimer]);
 
   useEffect(() => {
     try {
@@ -679,8 +1094,11 @@ export default function Home() {
     });
     focusPartialSegmentIdsRef.current = {};
 
-    if (changed) publishFocusSegments(session.segments);
-  }, [publishFocusSegments]);
+    if (changed) {
+      publishFocusSegments(session.segments);
+      scheduleActiveTranscriptAutosave("final");
+    }
+  }, [publishFocusSegments, scheduleActiveTranscriptAutosave]);
 
   const appendFocusTranslationDelta = useCallback(
     (targetLanguage: TargetLanguage, delta: string) => {
@@ -730,35 +1148,46 @@ export default function Home() {
       }
 
       publishFocusSegments(session.segments);
+      scheduleActiveTranscriptAutosave("partial");
     },
-    [publishFocusSegments]
+    [publishFocusSegments, scheduleActiveTranscriptAutosave]
   );
 
   const beginTranscriptSession = useCallback(() => {
     const now = Date.now();
-    activeTranscriptSessionRef.current = {
+    const session: StoredTranscriptSession = {
       id: createTranscriptId("session"),
       startedAt: now,
       stoppedAt: 0,
       provider: apiProviderRef.current,
       segments: [],
+      status: "draft",
+      updatedAt: now,
     };
+    activeTranscriptSessionRef.current = session;
     focusPartialSegmentIdsRef.current = {};
+    transcriptLastPartialCheckpointRef.current = now;
     setFocusSegments([]);
     setTranscriptReadyVisible(false);
-  }, []);
+    void queueStoredTranscriptSessionSave(session);
+  }, [queueStoredTranscriptSessionSave]);
 
-  const discardActiveTranscriptSession = useCallback(() => {
+  const discardActiveTranscriptSession = useCallback(async () => {
+    const activeSessionId = activeTranscriptSessionRef.current?.id;
+    clearTranscriptAutosaveTimer();
     activeTranscriptSessionRef.current = null;
     focusPartialSegmentIdsRef.current = {};
     setFocusSegments([]);
-  }, []);
+    if (activeSessionId) await deleteStoredTranscriptSessionSafely(activeSessionId);
+  }, [clearTranscriptAutosaveTimer, deleteStoredTranscriptSessionSafely]);
 
-  const finishActiveTranscriptSession = useCallback(() => {
+  const finishActiveTranscriptSession = useCallback(async () => {
     const activeSession = activeTranscriptSessionRef.current;
     if (!activeSession) return;
 
+    clearTranscriptAutosaveTimer();
     finalizeCurrentFocusSegments();
+    clearTranscriptAutosaveTimer();
 
     const stoppedAt = Date.now();
     const finalSegments = activeSession.segments
@@ -773,18 +1202,30 @@ export default function Home() {
     activeTranscriptSessionRef.current = null;
     focusPartialSegmentIdsRef.current = {};
 
-    if (!finalSegments.length) return;
+    if (!finalSegments.length) {
+      await deleteStoredTranscriptSessionSafely(activeSession.id);
+      return;
+    }
 
-    const session: TranscriptSession = {
+    const session: StoredTranscriptSession = {
       ...activeSession,
       stoppedAt,
       segments: finalSegments,
+      status: "completed",
+      updatedAt: stoppedAt,
     };
 
-    setTranscriptSessions((previous) => [session, ...previous]);
+    await queueStoredTranscriptSessionSave(session);
+    setTranscriptSessions((previous) => sortStoredTranscriptSessions([session, ...previous]));
     setTranscriptReadyVisible(true);
     publishFocusSegments(session.segments);
-  }, [finalizeCurrentFocusSegments, publishFocusSegments]);
+  }, [
+    clearTranscriptAutosaveTimer,
+    deleteStoredTranscriptSessionSafely,
+    finalizeCurrentFocusSegments,
+    publishFocusSegments,
+    queueStoredTranscriptSessionSave,
+  ]);
 
   const commitSourceLanguage = useCallback((language: TargetLanguage) => {
     if (sourceLanguageConfirmedRef.current && sourceLanguageRef.current !== language) {
@@ -933,7 +1374,7 @@ export default function Home() {
     }
 
     cleanupRealtime();
-    finishActiveTranscriptSession();
+    await finishActiveTranscriptSession();
     setRealtimeStatus("idle");
   }, [cleanupRealtime, finishActiveTranscriptSession, setRealtimeStatus]);
 
@@ -1328,7 +1769,7 @@ export default function Home() {
       }
     } catch (caughtError) {
       cleanupRealtime();
-      discardActiveTranscriptSession();
+      await discardActiveTranscriptSession();
       setRealtimeStatus("error");
       setError(caughtError instanceof Error ? caughtError.message : "Unknown error.");
     }
@@ -1458,31 +1899,67 @@ export default function Home() {
     setSavePanelOpen(true);
   }, []);
 
-  const downloadTranscriptSession = useCallback((session: TranscriptSession) => {
-    if (!getSessionFinalSegments(session).length) {
-      setError("This transcript is empty.");
-      return;
+  const downloadTranscriptSession = useCallback(
+    (session: StoredTranscriptSession) => {
+      if (!hasTranscriptText(session)) {
+        setError("This transcript is empty.");
+        return;
+      }
+
+      const content = formatTranscriptSession(session);
+      const blob = new Blob([`\uFEFF${content}`], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `translation-${session.provider}-${formatTimestampForFile(new Date(session.startedAt))}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+
+      const downloadedSession: StoredTranscriptSession = {
+        ...session,
+        downloaded: true,
+        updatedAt: Date.now(),
+      };
+      setTranscriptSessions((previous) =>
+        sortStoredTranscriptSessions(
+          previous.map((candidate) => (candidate.id === session.id ? downloadedSession : candidate))
+        )
+      );
+      void queueStoredTranscriptSessionSave(downloadedSession);
+    },
+    [queueStoredTranscriptSessionSave]
+  );
+
+  const deleteTranscriptSession = useCallback(
+    async (sessionId: string) => {
+      setTranscriptSessions((previous) => previous.filter((session) => session.id !== sessionId));
+      await deleteStoredTranscriptSessionSafely(sessionId);
+    },
+    [deleteStoredTranscriptSessionSafely]
+  );
+
+  const clearTranscriptSessionHistory = useCallback(async () => {
+    if (!transcriptSessions.length) return;
+    if (!window.confirm("Clear all saved transcript history? This cannot be undone.")) return;
+
+    const activeSessionId = activeTranscriptSessionRef.current?.id;
+    for (const sessionId of Array.from(pendingTranscriptSavesRef.current.keys())) {
+      if (sessionId !== activeSessionId) pendingTranscriptSavesRef.current.delete(sessionId);
     }
 
-    const content = formatTranscriptSession(session);
-    const blob = new Blob([`\uFEFF${content}`], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `translation-${session.provider}-${formatTimestampForFile(new Date(session.startedAt))}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const activeSaveLoop = transcriptSaveLoopRef.current;
+    if (activeSaveLoop) await activeSaveLoop;
 
-    setTranscriptSessions((previous) =>
-      previous.map((candidate) => (candidate.id === session.id ? { ...candidate, downloaded: true } : candidate))
-    );
-  }, []);
-
-  const deleteTranscriptSession = useCallback((sessionId: string) => {
-    setTranscriptSessions((previous) => previous.filter((session) => session.id !== sessionId));
-  }, []);
+    try {
+      await clearStoredTranscriptSessions({ preserveSessionId: activeSessionId });
+      setTranscriptSessions([]);
+    } catch (caughtError) {
+      console.warn("Transcript clear failed", caughtError);
+      notifyTranscriptStorageError();
+    }
+  }, [notifyTranscriptStorageError, transcriptSessions.length]);
 
   const isRunning = status === "connecting" || status === "live" || status === "stopping";
   const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
@@ -1702,39 +2179,52 @@ export default function Home() {
           <section aria-label="Saved transcript sessions" aria-modal="true" className="save-panel" role="dialog">
             <div className="save-panel-header">
               <h2>Transcripts</h2>
-              <button className="tiny-button" onClick={() => setSavePanelOpen(false)} type="button">
-                Close
-              </button>
+              <div className="save-panel-actions">
+                <button
+                  className="tiny-button danger-outline"
+                  disabled={!transcriptSessions.length}
+                  onClick={() => void clearTranscriptSessionHistory()}
+                  type="button"
+                >
+                  Clear All
+                </button>
+                <button className="tiny-button" onClick={() => setSavePanelOpen(false)} type="button">
+                  Close
+                </button>
+              </div>
             </div>
+            <p className="save-panel-note">
+              Saved locally in this browser for this site. Clearing browser site data, private browsing, a different browser, or a
+              different domain can remove or hide these records.
+            </p>
 
             {transcriptSessions.length ? (
               <div className="session-list">
-                {transcriptSessions.map((session) => {
-                  const finalSegments = getSessionFinalSegments(session);
-
-                  return (
-                    <div className="session-row" key={session.id}>
-                      <div className="session-meta">
-                        <span>{formatSessionTimeRange(session)}</span>
-                        <span>{formatDuration(session.startedAt, session.stoppedAt)}</span>
-                        <span>{getProviderLabel(session.provider)}</span>
-                        <span>{finalSegments.length} segments</span>
-                        {session.downloaded ? <span>Downloaded</span> : null}
-                      </div>
-                      <div className="session-actions">
-                        <button className="tiny-button" onClick={() => downloadTranscriptSession(session)} type="button">
-                          Download
-                        </button>
-                        <button className="tiny-button danger-outline" onClick={() => deleteTranscriptSession(session.id)} type="button">
-                          Delete
-                        </button>
-                      </div>
+                {transcriptSessions.map((session) => (
+                  <div className="session-row" key={session.id}>
+                    <div className="session-meta">
+                      <span>{formatSessionTimeRange(session)}</span>
+                      <span>{formatDuration(session.startedAt, getTranscriptSessionEndTime(session))}</span>
+                      {session.status === "recovered" ? <span className="session-badge">Recovered</span> : null}
+                      {session.downloaded ? <span className="session-badge">Downloaded</span> : null}
                     </div>
-                  );
-                })}
+                    <div className="session-actions">
+                      <button className="tiny-button" onClick={() => downloadTranscriptSession(session)} type="button">
+                        Download
+                      </button>
+                      <button
+                        className="tiny-button danger-outline"
+                        onClick={() => void deleteTranscriptSession(session.id)}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
-              <p className="empty-session-message">No stopped transcript sessions yet.</p>
+              <p className="empty-session-message">No saved transcript sessions yet.</p>
             )}
           </section>
         </div>
