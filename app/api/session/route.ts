@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { denyWithoutAccessCode, noStoreHeaders } from "../_shared/access";
+import { getClientIdentity } from "../_shared/identity";
 
 export const runtime = "nodejs";
 
@@ -14,18 +14,8 @@ const ALLOWED_TARGET_LANGUAGES = new Set(["en", "zh", "es", "fr", "de", "it", "p
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    message: "Open http://localhost:3001 for the translator UI. This endpoint is used by the app with POST.",
+    message: "This endpoint is used by the translator app with POST. Open the site root for the UI.",
   });
-}
-
-function getSafetyIdentifier(request: NextRequest) {
-  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const userAgent = request.headers.get("user-agent") ?? "unknown";
-  const salt = process.env.SAFETY_SALT ?? "simple-realtime-translator";
-  return createHash("sha256")
-    .update(`${salt}:${forwardedFor ?? "anonymous"}:${userAgent}`)
-    .digest("hex")
-    .slice(0, 64);
 }
 
 export async function POST(request: NextRequest) {
@@ -59,7 +49,7 @@ export async function POST(request: NextRequest) {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "OpenAI-Safety-Identifier": getSafetyIdentifier(request),
+      "OpenAI-Safety-Identifier": getClientIdentity(request),
     },
     body: JSON.stringify({
       session: {

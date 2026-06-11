@@ -329,9 +329,26 @@ Soniox 路径有 SDK 自带 `auto_reconnect: true`；OpenAI 路径在 `connectio
 
 ---
 
+## 执行状态（2026-06-12 更新）
+
+| 任务 | 状态 | 说明 |
+| --- | --- | --- |
+| T1 仓库卫生 | ✅ 完成 | 仓库原本已有 git 历史（环境检测的是外层目录）；删除 7 个日志文件与 tsbuildinfo，提交文档 |
+| T2 工具链 | ✅ 完成 | typescript/@types 移入 devDependencies；ESLint flat config + lint/typecheck 脚本 |
+| T3 拆分 page.tsx | ✅ 完成 | 2638 行 → 约 580 行编排层 + lib/hooks/components 共 16 个模块；生产服务器冒烟测试通过 |
+| T4 Focus 单连接 | ✅ 完成 | Focus 模式单 session；源语言翻转时自动重建连接；README 成本表已更新 |
+| T5 原文重复验证 | ⏸ 待人工实测 | 见下方遗留问题 |
+| T6 渲染性能 | ✅ 完成 | 四个 UI 组件 memo 化，全部回调稳定引用 |
+| T7 内存上限 | ✅ 完成 | token 去重键双 Set 轮换（上限 2×20000）；segments 存储上限 512（只丢已 final 段） |
+| T8 自动重连 | ✅ 完成 | 每连接重试 2 次（1s/3s），session epoch 防竞态，Stop 可中止 |
+| T9 设备切换 | ✅ 完成 | OpenAI 用 replaceTrack；Soniox 用 keepSession 重启（保留转写会话与屏幕字幕） |
+| T10 杂项 | ✅ 完成 | GET /api/session 去硬编码端口；identity 工具合并；engines >=20 |
+
 ## 遗留问题（执行过程中追加）
 
 > 各 Agent 在执行中发现的、超出自己任务卡范围的问题，统一记录在这里，不要顺手修。
 
-- （T5 待填）OpenAI en→en 连接对英文输入的实际输出行为：
-- （T2 待填）lint 报出的逻辑类警告清单：
+- **（T5 待人工实测）OpenAI en→en 连接对英文输入的实际输出行为**：本轮执行环境没有真实 OpenAI key，无法验证 Split 模式下 en 连接对英文输入是否回显原文（导致 English 段落重复）。实测方法：用真实 key 启动 Split 模式说一段英文，在 DevTools 观察 `oai-events-en` 数据通道的 `session.output_transcript.delta` 是否有内容。若确认回显，修复方案见任务卡 T5 第 2 步（在 `hooks/useOpenAiTranslation.ts` 的 onmessage 中过滤 `targetLanguage === 当前输入语言` 的 output 写入）。注意 T4 之后 Focus 模式天然无此问题，只需验证 Split 模式。
+- （T2）lint 仅报出机械性问题（6 处 prefer-const，已自动修复）与 `_request` 未使用参数（已加 argsIgnorePattern 豁免），无逻辑类警告。
+- （T4 设计限制）运行中从 Focus 切到 Split 不会热建第二条连接，需 Stop/Start 重启；已写入 README。
+- （T9 设计限制）Soniox 无运行中换音源 API（已确认 `@soniox/client` 2.x 的 `Recording` 仅有 pause/resume/stop/cancel），采用保留会话的重启方案，切换瞬间约有 1-2 秒断流。
