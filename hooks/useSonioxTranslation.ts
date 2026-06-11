@@ -10,7 +10,7 @@ import {
 } from "@soniox/client";
 import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { createEmptyCaptionMap, getErrorMessage } from "../lib/caption-text";
-import { SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE } from "../lib/constants";
+import { SONIOX_FINAL_TOKEN_KEY_LIMIT, SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE } from "../lib/constants";
 import {
   appendSonioxCaptionText,
   createEmptySonioxCaptionBuffer,
@@ -57,7 +57,23 @@ export function useSonioxTranslation({
 }: UseSonioxTranslationParams) {
   const sonioxRecordingRef = useRef<SonioxRecording | null>(null);
   const sonioxCaptionBufferRef = useRef<SonioxCaptionBuffer>(createEmptySonioxCaptionBuffer());
+  // Dedup keys rotate across two generations so memory stays bounded during
+  // multi-hour sessions; lookups check both, inserts go to the current one.
   const sonioxFinalTokenKeysRef = useRef<Set<string>>(new Set());
+  const sonioxPreviousFinalTokenKeysRef = useRef<Set<string>>(new Set());
+
+  const hasSonioxFinalTokenKey = useCallback(
+    (key: string) => sonioxFinalTokenKeysRef.current.has(key) || sonioxPreviousFinalTokenKeysRef.current.has(key),
+    []
+  );
+
+  const addSonioxFinalTokenKey = useCallback((key: string) => {
+    sonioxFinalTokenKeysRef.current.add(key);
+    if (sonioxFinalTokenKeysRef.current.size >= SONIOX_FINAL_TOKEN_KEY_LIMIT) {
+      sonioxPreviousFinalTokenKeysRef.current = sonioxFinalTokenKeysRef.current;
+      sonioxFinalTokenKeysRef.current = new Set();
+    }
+  }, []);
 
   const createSonioxConnectionConfig = useCallback(async (): Promise<SonioxConnectionConfig> => {
     const createConfigRequest = () =>
@@ -140,7 +156,7 @@ export function useSonioxTranslation({
         const finalTokenKey = token.is_final
           ? getSonioxFinalTokenKey(token, translationStatus, language, result, tokenIndex)
           : null;
-        if (finalTokenKey && sonioxFinalTokenKeysRef.current.has(finalTokenKey)) {
+        if (finalTokenKey && hasSonioxFinalTokenKey(finalTokenKey)) {
           logSonioxTokenDebug(
             debugEnabled,
             result,
@@ -173,7 +189,7 @@ export function useSonioxTranslation({
         targetBuffer[language] = appendSonioxCaptionText(targetBuffer[language], token.text);
 
         if (token.is_final) {
-          if (finalTokenKey) sonioxFinalTokenKeysRef.current.add(finalTokenKey);
+          if (finalTokenKey) addSonioxFinalTokenKey(finalTokenKey);
           buffer.finalDisplay[language] = appendSonioxCaptionText(buffer.finalDisplay[language], token.text);
           appendSessionTranscriptText(language, token.text, "final");
           if (translationStatus === "translation") {
@@ -209,8 +225,10 @@ export function useSonioxTranslation({
       updateSonioxCaptionState();
     },
     [
+      addSonioxFinalTokenKey,
       appendFocusTranslationDelta,
       appendSessionTranscriptText,
+      hasSonioxFinalTokenKey,
       trackSourceLanguage,
       trackSourceLanguageEvidence,
       updateSonioxCaptionState,
@@ -326,12 +344,14 @@ export function useSonioxTranslation({
   const resetSonioxBuffers = useCallback(() => {
     sonioxCaptionBufferRef.current = createEmptySonioxCaptionBuffer();
     sonioxFinalTokenKeysRef.current = new Set();
+    sonioxPreviousFinalTokenKeysRef.current = new Set();
   }, []);
 
   // A fresh connection restarts audio timestamps at zero, so old dedup keys
   // could wrongly skip new tokens. Clearing keeps captions intact.
   const resetSonioxFinalTokenKeys = useCallback(() => {
     sonioxFinalTokenKeysRef.current = new Set();
+    sonioxPreviousFinalTokenKeysRef.current = new Set();
   }, []);
 
   return {

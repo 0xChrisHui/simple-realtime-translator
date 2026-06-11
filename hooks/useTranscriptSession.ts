@@ -11,6 +11,7 @@ import {
 } from "../lib/caption-text";
 import {
   FOCUS_SEGMENT_MAX_CHARS,
+  FOCUS_SEGMENT_STORAGE_LIMIT,
   FOCUS_TIMELINE_MAX_SEGMENTS,
   TRANSCRIPT_AUTOSAVE_DELAY_MS,
   TRANSCRIPT_PARTIAL_CHECKPOINT_MS,
@@ -43,6 +44,21 @@ type UseTranscriptSessionParams = {
   sourceLanguageRef: MutableRefObject<TargetLanguage>;
   setError: (updater: string | ((currentError: string) => string)) => void;
 };
+
+// Segments only feed the Focus timeline display and crash recovery; the full
+// export text accumulates separately in transcriptText, so dropping the
+// oldest finalized segments here never loses transcript content.
+function pruneStoredSegments(session: StoredTranscriptSession) {
+  const excess = session.segments.length - FOCUS_SEGMENT_STORAGE_LIMIT;
+  if (excess <= 0) return;
+
+  let removed = 0;
+  session.segments = session.segments.filter((segment) => {
+    if (removed >= excess || !segment.final) return true;
+    removed += 1;
+    return false;
+  });
+}
 
 export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setError }: UseTranscriptSessionParams) {
   const [focusSegments, setFocusSegments] = useState<FocusTranscriptSegment[]>([]);
@@ -316,6 +332,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
         };
         session.segments.push(segment);
         focusPartialSegmentIdsRef.current[targetLanguage] = segment.id;
+        pruneStoredSegments(session);
       }
 
       publishFocusSegments(session.segments);

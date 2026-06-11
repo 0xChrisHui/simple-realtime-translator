@@ -20,6 +20,8 @@ export const SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE: Record<TargetLanguage, number>
 export const DISPLAY_CAPTION_MAX_CHARS = 4000;
 export const FOCUS_TIMELINE_MAX_SEGMENTS = 32;
 export const FOCUS_SEGMENT_MAX_CHARS = 900;
+export const FOCUS_SEGMENT_STORAGE_LIMIT = 512;
+export const SONIOX_FINAL_TOKEN_KEY_LIMIT = 20000;
 export const MISSING_OPENAI_API_KEY_CAPTION = "请输入你的 API key\nPlease enter your API key";
 export const MISSING_OPENAI_API_KEY_MESSAGE = "请输入你的 OpenAI API key / Please enter your OpenAI API key.";
 export const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
