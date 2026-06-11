@@ -8,6 +8,10 @@ type SonioxConfigRequest = {
   sonioxApiKey?: string;
 };
 
+const TEMPORARY_KEY_EXPIRES_IN_SECONDS = 60;
+const TEMPORARY_KEY_SINGLE_USE = true;
+const TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS = 18000;
+
 function getClientReferenceId(request: NextRequest) {
   const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   const userAgent = request.headers.get("user-agent") ?? "unknown";
@@ -65,9 +69,9 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         usage_type: "transcribe_websocket",
-        expires_in_seconds: 60,
-        single_use: true,
-        max_session_duration_seconds: 7200,
+        expires_in_seconds: TEMPORARY_KEY_EXPIRES_IN_SECONDS,
+        single_use: TEMPORARY_KEY_SINGLE_USE,
+        max_session_duration_seconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
         client_reference_id: getClientReferenceId(request),
       }),
     });
@@ -99,6 +103,7 @@ export async function POST(request: NextRequest) {
       {
         api_key: responseData.api_key,
         expires_at: typeof responseData.expires_at === "string" ? responseData.expires_at : null,
+        max_session_duration_seconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
       },
       { status: upstream.status, headers: noStoreHeaders }
     );

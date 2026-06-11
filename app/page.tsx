@@ -91,6 +91,7 @@ type SonioxCaptionBuffer = {
   finalTranslation: CaptionMap;
   partialTranslation: CaptionMap;
 };
+type SonioxTokenKind = "original" | "translation";
 
 const API_PROVIDERS: Array<{ code: ApiProvider; label: string }> = [
   { code: "openai", label: "OpenAI" },
@@ -103,7 +104,7 @@ const TARGETS: Array<{ code: TargetLanguage; label: string; placeholder: string 
 const INPUT_TRANSCRIPT_TARGET: TargetLanguage = "zh";
 const DEFAULT_CAPTION_FONT_SIZES: CaptionFontSizeMap = { en: 60, zh: 70 };
 const MIN_CAPTION_FONT_SIZE = 24;
-const SPLIT_CAPTION_TARGET_LINES: Record<TargetLanguage, number> = { en: 4, zh: 3 };
+const SPLIT_CAPTION_TARGET_LINES: Record<TargetLanguage, number> = { en: 4, zh: 4 };
 const SPLIT_CAPTION_LINE_HEIGHT_RATIO: Record<TargetLanguage, number> = { en: 1.08, zh: 1.2 };
 const SOURCE_LANGUAGE_SWITCH_DELAY_MS = 2500;
 const SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS = 1400;
@@ -117,6 +118,7 @@ const MISSING_OPENAI_API_KEY_MESSAGE = "请输入你的 OpenAI API key / Please 
 const WATERMARK_IMAGE = formatWatermarkImage(process.env.NEXT_PUBLIC_WATERMARK_IMAGE ?? "");
 const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
+const SONIOX_DEBUG_STORAGE_KEY = "translatorSonioxDebug";
 const TRANSCRIPT_DB_NAME = "simple-realtime-translator";
 const TRANSCRIPT_DB_VERSION = 1;
 const TRANSCRIPT_SESSION_STORE = "transcriptSessions";
@@ -365,10 +367,14 @@ function combineSonioxCaption(finalText: string, partialText: string) {
   return appendCaptionDelta(finalText, partialText, DISPLAY_CAPTION_MAX_CHARS);
 }
 
+function combineSonioxCaptionParts(...parts: string[]) {
+  return parts.reduce((combined, part) => combineSonioxCaption(combined, part), "");
+}
+
 function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer) {
   const captions: CaptionMap = {
-    en: combineSonioxCaption(buffer.finalDisplay.en, buffer.partialDisplay.en),
-    zh: combineSonioxCaption(buffer.finalDisplay.zh, buffer.partialDisplay.zh),
+    en: combineSonioxCaptionParts(buffer.finalDisplay.en, buffer.partialOriginal.en, buffer.partialTranslation.en),
+    zh: combineSonioxCaptionParts(buffer.finalDisplay.zh, buffer.partialOriginal.zh, buffer.partialTranslation.zh),
   };
   const translationCaptions: CaptionMap = {
     en: combineSonioxCaption(buffer.finalTranslation.en, buffer.partialTranslation.en),
@@ -376,6 +382,58 @@ function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer) {
   };
 
   return { captions, translationCaptions };
+}
+
+function getSonioxTokenKind(token: SonioxRealtimeToken): SonioxTokenKind {
+  return token.translation_status === "translation" ? "translation" : "original";
+}
+
+function getSonioxOutputLanguage(token: SonioxRealtimeToken, kind: SonioxTokenKind): TargetLanguage | null {
+  const tokenLanguage = normalizeSonioxLanguage(token.language);
+  if (kind !== "translation") return tokenLanguage;
+
+  const sourceLanguage = normalizeSonioxLanguage(token.source_language);
+  if (!sourceLanguage) return tokenLanguage;
+  if (tokenLanguage && tokenLanguage !== sourceLanguage) return tokenLanguage;
+
+  return getFocusTargetLanguage(sourceLanguage);
+}
+
+function isSonioxDebugEnabled() {
+  if (typeof window === "undefined") return false;
+
+  try {
+    const value = window.localStorage.getItem(SONIOX_DEBUG_STORAGE_KEY);
+    return value === "1" || value === "true";
+  } catch {
+    return false;
+  }
+}
+
+function logSonioxTokenDebug(
+  enabled: boolean,
+  result: SonioxRealtimeResult,
+  token: SonioxRealtimeToken,
+  tokenIndex: number,
+  translationStatus: SonioxTokenKind,
+  language: TargetLanguage,
+  sourceLanguage: TargetLanguage | null,
+  skipped: boolean
+) {
+  if (!enabled) return;
+
+  console.debug("[soniox-token]", {
+    finalAudioProcessedMs: result.final_audio_proc_ms,
+    index: tokenIndex,
+    isFinal: token.is_final === true,
+    language,
+    rawLanguage: token.language,
+    rawSourceLanguage: token.source_language,
+    skipped,
+    sourceLanguage,
+    text: token.text,
+    translationStatus,
+  });
 }
 
 function getSonioxFinalTokenKey(
@@ -1770,18 +1828,37 @@ export default function Home() {
   const handleSonioxResult = useCallback(
     (result: SonioxRealtimeResult) => {
       const buffer = sonioxCaptionBufferRef.current;
-      buffer.partialDisplay = createEmptyCaptionMap();
-      buffer.partialOriginal = createEmptyCaptionMap();
-      buffer.partialTranslation = createEmptyCaptionMap();
+      const debugEnabled = isSonioxDebugEnabled();
+      const partialTouched: Record<SonioxTokenKind, Set<TargetLanguage>> = {
+        original: new Set(),
+        translation: new Set(),
+      };
+      const finalTouched: Record<SonioxTokenKind, Set<TargetLanguage>> = {
+        original: new Set(),
+        translation: new Set(),
+      };
 
       result.tokens.forEach((token: SonioxRealtimeToken, tokenIndex) => {
         if (!token.text) return;
 
-        const translationStatus =
-          token.translation_status === "translation" ? "translation" : token.translation_status === "none" ? "original" : "original";
-        const language = normalizeSonioxLanguage(token.language);
+        const translationStatus = getSonioxTokenKind(token);
+        const language = getSonioxOutputLanguage(token, translationStatus);
         const sourceLanguageFromToken = normalizeSonioxLanguage(token.source_language);
-        if (!language) return;
+        if (!language) {
+          if (debugEnabled) {
+            console.debug("[soniox-token]", {
+              finalAudioProcessedMs: result.final_audio_proc_ms,
+              index: tokenIndex,
+              isFinal: token.is_final === true,
+              rawLanguage: token.language,
+              skipped: true,
+              sourceLanguage: sourceLanguageFromToken,
+              text: token.text,
+              translationStatus,
+            });
+          }
+          return;
+        }
 
         if (translationStatus === "original") {
           trackSourceLanguage(language, token.text);
@@ -1795,7 +1872,19 @@ export default function Home() {
         const finalTokenKey = token.is_final
           ? getSonioxFinalTokenKey(token, translationStatus, language, result, tokenIndex)
           : null;
-        if (finalTokenKey && sonioxFinalTokenKeysRef.current.has(finalTokenKey)) return;
+        if (finalTokenKey && sonioxFinalTokenKeysRef.current.has(finalTokenKey)) {
+          logSonioxTokenDebug(
+            debugEnabled,
+            result,
+            token,
+            tokenIndex,
+            translationStatus,
+            language,
+            sourceLanguageFromToken,
+            true
+          );
+          return;
+        }
 
         const targetBuffer =
           translationStatus === "translation"
@@ -1805,20 +1894,50 @@ export default function Home() {
             : token.is_final
               ? buffer.finalOriginal
               : buffer.partialOriginal;
-        const displayBuffer = token.is_final ? buffer.finalDisplay : buffer.partialDisplay;
+
+        if (token.is_final) {
+          finalTouched[translationStatus].add(language);
+        } else if (!partialTouched[translationStatus].has(language)) {
+          targetBuffer[language] = "";
+          partialTouched[translationStatus].add(language);
+        }
 
         targetBuffer[language] = appendSonioxCaptionText(targetBuffer[language], token.text);
-        displayBuffer[language] = appendSonioxCaptionText(displayBuffer[language], token.text);
 
         if (token.is_final) {
           if (finalTokenKey) sonioxFinalTokenKeysRef.current.add(finalTokenKey);
+          buffer.finalDisplay[language] = appendSonioxCaptionText(buffer.finalDisplay[language], token.text);
           appendSessionTranscriptText(language, token.text, "final");
           if (translationStatus === "translation") {
             appendFocusTranslationDelta(language, token.text);
           }
         }
+
+        logSonioxTokenDebug(
+          debugEnabled,
+          result,
+          token,
+          tokenIndex,
+          translationStatus,
+          language,
+          sourceLanguageFromToken,
+          false
+        );
       });
 
+      (["original", "translation"] as const).forEach((translationStatus) => {
+        finalTouched[translationStatus].forEach((language) => {
+          if (partialTouched[translationStatus].has(language)) return;
+
+          if (translationStatus === "translation") {
+            buffer.partialTranslation[language] = "";
+          } else {
+            buffer.partialOriginal[language] = "";
+          }
+        });
+      });
+
+      buffer.partialDisplay = createEmptyCaptionMap();
       updateSonioxCaptionState();
     },
     [

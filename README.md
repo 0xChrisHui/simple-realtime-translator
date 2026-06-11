@@ -36,6 +36,19 @@ If port 3000 is already in use:
 npm run dev -- -p 3001
 ```
 
+## API Provider Setup and Cost
+
+This app has two built-in provider choices in the top control strip:
+
+| Provider | Where to get an API key | Best fit | Estimated live caption cost |
+| --- | --- | --- | --- |
+| OpenAI | [API keys](https://platform.openai.com/api-keys), [billing](https://platform.openai.com/settings/organization/billing/overview), [pricing](https://openai.com/api/pricing/) | OpenAI Realtime Translation with WebRTC | about `$2.04/hour` (`gpt-realtime-translate` at `$0.034/min`) |
+| Soniox | [Build with Soniox](https://console.soniox.com/), [pricing](https://soniox.com/pricing) | Long meetings and cost-sensitive bilingual captions | about `$0.12-$0.18/hour` for this app's realtime caption/translation use |
+
+Recommended default for long English/Chinese conference captions: start with Soniox because it is much cheaper for long sessions. Keep OpenAI available as a second provider when you want to compare quality or use OpenAI's Realtime Translation path.
+
+Pricing changes over time. Check the provider pricing pages before public or high-volume use.
+
 ## Environment Variables
 
 Create `.env.local` for local development:
