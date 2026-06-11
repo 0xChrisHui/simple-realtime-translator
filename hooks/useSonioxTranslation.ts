@@ -328,10 +328,17 @@ export function useSonioxTranslation({
     sonioxFinalTokenKeysRef.current = new Set();
   }, []);
 
+  // A fresh connection restarts audio timestamps at zero, so old dedup keys
+  // could wrongly skip new tokens. Clearing keeps captions intact.
+  const resetSonioxFinalTokenKeys = useCallback(() => {
+    sonioxFinalTokenKeysRef.current = new Set();
+  }, []);
+
   return {
     startSonioxTranslation,
     cancelSonioxRecording,
     stopSonioxRecording,
     resetSonioxBuffers,
+    resetSonioxFinalTokenKeys,
   };
 }

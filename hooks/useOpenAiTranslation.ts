@@ -370,6 +370,43 @@ export function useOpenAiTranslation({
     [cleanupRealtimeRef, closeTargetConnection, connectTranslation, setError, setRealtimeStatus, statusRef]
   );
 
+  // Swaps the microphone without tearing down connections or the transcript
+  // session. Throws if the new device cannot be opened; the old stream keeps
+  // running in that case.
+  const switchAudioInput = useCallback(async (audioInputId?: string) => {
+    const oldStream = sourceStreamRef.current;
+    if (!oldStream) return false;
+
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+
+    if (audioInputId) {
+      audioConstraints.deviceId = { exact: audioInputId };
+    }
+
+    const newStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    const [newTrack] = newStream.getAudioTracks();
+
+    try {
+      await Promise.all(
+        Object.values(peerConnectionsRef.current).map((peerConnection) => {
+          const sender = peerConnection?.getSenders().find((candidate) => candidate.track?.kind === "audio");
+          return sender ? sender.replaceTrack(newTrack) : Promise.resolve();
+        })
+      );
+    } catch (caughtError) {
+      newStream.getTracks().forEach((track) => track.stop());
+      throw caughtError;
+    }
+
+    sourceStreamRef.current = newStream;
+    oldStream.getTracks().forEach((track) => track.stop());
+    return true;
+  }, []);
+
   const cleanupOpenAi = useCallback(() => {
     sessionEpochRef.current += 1;
     singleSwitchInFlightRef.current = false;
@@ -401,6 +438,7 @@ export function useOpenAiTranslation({
   return {
     startOpenAiTranslation,
     switchSingleTarget,
+    switchAudioInput,
     cleanupOpenAi,
   };
 }

@@ -123,7 +123,7 @@ export default function Home() {
     setError,
   });
 
-  const { startOpenAiTranslation, switchSingleTarget, cleanupOpenAi } = useOpenAiTranslation({
+  const { startOpenAiTranslation, switchSingleTarget, switchAudioInput, cleanupOpenAi } = useOpenAiTranslation({
     statusRef,
     setRealtimeStatus,
     setError,
@@ -141,8 +141,13 @@ export default function Home() {
     cleanupRealtimeRef,
   });
 
-  const { startSonioxTranslation, cancelSonioxRecording, stopSonioxRecording, resetSonioxBuffers } =
-    useSonioxTranslation({
+  const {
+    startSonioxTranslation,
+    cancelSonioxRecording,
+    stopSonioxRecording,
+    resetSonioxBuffers,
+    resetSonioxFinalTokenKeys,
+  } = useSonioxTranslation({
       statusRef,
       setRealtimeStatus,
       setError,
@@ -410,10 +415,45 @@ export default function Home() {
 
       if (statusRef.current !== "live") return;
 
-      await stop();
-      await start(deviceId);
+      if (apiProviderRef.current === "openai") {
+        try {
+          await switchAudioInput(deviceId);
+        } catch (caughtError) {
+          setError(
+            caughtError instanceof Error
+              ? `Could not switch audio input: ${caughtError.message}`
+              : "Could not switch audio input."
+          );
+        }
+        return;
+      }
+
+      // Soniox has no in-flight source swap; restart the connection while
+      // keeping the active transcript session and on-screen captions.
+      setRealtimeStatus("stopping");
+      await stopSonioxRecording();
+      resetSonioxFinalTokenKeys();
+      setRealtimeStatus("connecting");
+
+      try {
+        await startSonioxTranslation(deviceId);
+      } catch (caughtError) {
+        cleanupRealtime();
+        await finishActiveTranscriptSession();
+        setRealtimeStatus("error");
+        setError(caughtError instanceof Error ? caughtError.message : "Could not switch audio input.");
+      }
     },
-    [selectAudioInput, start, stop]
+    [
+      cleanupRealtime,
+      finishActiveTranscriptSession,
+      resetSonioxFinalTokenKeys,
+      selectAudioInput,
+      setRealtimeStatus,
+      startSonioxTranslation,
+      stopSonioxRecording,
+      switchAudioInput,
+    ]
   );
 
   const toggleFullscreen = useCallback(async () => {
