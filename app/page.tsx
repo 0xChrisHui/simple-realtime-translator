@@ -72,6 +72,7 @@ export default function Home() {
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const manualCaptionFontSizeOverridesRef = useRef<Record<TargetLanguage, boolean>>({ en: false, zh: false });
   const cleanupRealtimeRef = useRef<() => void>(() => {});
+  const switchSingleTargetRef = useRef<(language: TargetLanguage) => void>(() => {});
 
   const setRealtimeStatus = useCallback((nextStatus: Status) => {
     statusRef.current = nextStatus;
@@ -99,13 +100,21 @@ export default function Home() {
     clearTranscriptSessionHistory,
   } = useTranscriptSession({ apiProviderRef, sourceLanguageRef, setError });
 
+  const handleCommittedSourceLanguageChange = useCallback((language: TargetLanguage) => {
+    switchSingleTargetRef.current(language);
+  }, []);
+
   const {
     sourceLanguage,
     lastInputLanguageRef,
     trackSourceLanguage,
     trackSourceLanguageEvidence,
     resetSourceLanguageTracking,
-  } = useSourceLanguage({ sourceLanguageRef, finalizeCurrentFocusSegments });
+  } = useSourceLanguage({
+    sourceLanguageRef,
+    finalizeCurrentFocusSegments,
+    onCommittedSourceLanguageChange: handleCommittedSourceLanguageChange,
+  });
 
   const { audioInputs, selectedAudioInputId, selectedAudioInputIdRef, selectAudioInput, refreshAudioInputs } =
     useAudioInputs({ setError });
@@ -114,7 +123,7 @@ export default function Home() {
     setError,
   });
 
-  const { startOpenAiTranslation, cleanupOpenAi } = useOpenAiTranslation({
+  const { startOpenAiTranslation, switchSingleTarget, cleanupOpenAi } = useOpenAiTranslation({
     statusRef,
     setRealtimeStatus,
     setError,
@@ -157,6 +166,13 @@ export default function Home() {
   useEffect(() => {
     cleanupRealtimeRef.current = cleanupRealtime;
   }, [cleanupRealtime]);
+
+  useEffect(() => {
+    switchSingleTargetRef.current = (language: TargetLanguage) => {
+      if (apiProviderRef.current !== "openai") return;
+      void switchSingleTarget(language);
+    };
+  }, [switchSingleTarget]);
 
   const autoFitSplitCaptionFontSizes = useCallback(() => {
     if (displayMode !== "dual") return;
@@ -364,7 +380,7 @@ export default function Home() {
 
       try {
         if (apiProviderRef.current === "openai") {
-          await startOpenAiTranslation(audioInputId);
+          await startOpenAiTranslation(audioInputId, displayMode);
         } else {
           await startSonioxTranslation(audioInputId);
         }
@@ -379,6 +395,7 @@ export default function Home() {
       beginTranscriptSession,
       cleanupRealtime,
       discardActiveTranscriptSession,
+      displayMode,
       resetCaptionState,
       selectedAudioInputIdRef,
       setRealtimeStatus,

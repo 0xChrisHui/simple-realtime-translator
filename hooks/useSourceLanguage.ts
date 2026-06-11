@@ -13,9 +13,14 @@ import type { SourceLanguageSwitchCandidate, TargetLanguage } from "../lib/types
 type UseSourceLanguageParams = {
   sourceLanguageRef: MutableRefObject<TargetLanguage>;
   finalizeCurrentFocusSegments: () => void;
+  onCommittedSourceLanguageChange?: (language: TargetLanguage) => void;
 };
 
-export function useSourceLanguage({ sourceLanguageRef, finalizeCurrentFocusSegments }: UseSourceLanguageParams) {
+export function useSourceLanguage({
+  sourceLanguageRef,
+  finalizeCurrentFocusSegments,
+  onCommittedSourceLanguageChange,
+}: UseSourceLanguageParams) {
   const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
 
   const sourceLanguageConfirmedRef = useRef(false);
@@ -24,7 +29,8 @@ export function useSourceLanguage({ sourceLanguageRef, finalizeCurrentFocusSegme
 
   const commitSourceLanguage = useCallback(
     (language: TargetLanguage) => {
-      if (sourceLanguageConfirmedRef.current && sourceLanguageRef.current !== language) {
+      const languageChanged = sourceLanguageRef.current !== language;
+      if (sourceLanguageConfirmedRef.current && languageChanged) {
         finalizeCurrentFocusSegments();
       }
 
@@ -32,8 +38,10 @@ export function useSourceLanguage({ sourceLanguageRef, finalizeCurrentFocusSegme
       sourceLanguageConfirmedRef.current = true;
       sourceLanguageSwitchCandidateRef.current = null;
       setSourceLanguage(language);
+
+      if (languageChanged) onCommittedSourceLanguageChange?.(language);
     },
-    [finalizeCurrentFocusSegments, sourceLanguageRef]
+    [finalizeCurrentFocusSegments, onCommittedSourceLanguageChange, sourceLanguageRef]
   );
 
   const trackSourceLanguageEvidence = useCallback(

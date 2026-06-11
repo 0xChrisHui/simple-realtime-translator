@@ -42,8 +42,10 @@ This app has two built-in provider choices in the top control strip:
 
 | Provider | Where to get an API key | Best fit | Estimated live caption cost |
 | --- | --- | --- | --- |
-| OpenAI | [API keys](https://platform.openai.com/api-keys), [billing](https://platform.openai.com/settings/organization/billing/overview), [pricing](https://openai.com/api/pricing/) | OpenAI Realtime Translation with WebRTC | about `$2.04/hour` (`gpt-realtime-translate` at `$0.034/min`) |
+| OpenAI | [API keys](https://platform.openai.com/api-keys), [billing](https://platform.openai.com/settings/organization/billing/overview), [pricing](https://openai.com/api/pricing/) | OpenAI Realtime Translation with WebRTC | Focus view about `$2.04/hour` (one `gpt-realtime-translate` session at `$0.034/min`); Split view about `$4.08/hour` (two sessions, one per caption direction) |
 | Soniox | [Build with Soniox](https://console.soniox.com/), [pricing](https://soniox.com/pricing) | Long meetings and cost-sensitive bilingual captions | about `$0.12-$0.18/hour` for this app's realtime caption/translation use |
+
+For OpenAI, the connection layout is decided when you click `Start`: Focus view opens a single translation session that follows the detected spoken language, Split view opens two sessions (English and Chinese). Switching from Focus to Split while running keeps the single session; click `Stop` and `Start` again to enable both caption panels.
 
 Recommended default for long English/Chinese conference captions: start with Soniox because it is much cheaper for long sessions. Keep OpenAI available as a second provider when you want to compare quality or use OpenAI's Realtime Translation path.
 

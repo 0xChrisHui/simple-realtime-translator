@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   appendCaptionDelta,
   detectInputLanguage,
@@ -10,7 +10,9 @@ import {
   isOutputTranscriptDoneEvent,
 } from "../lib/caption-text";
 import { DISPLAY_CAPTION_MAX_CHARS, INPUT_TRANSCRIPT_TARGET, TARGETS } from "../lib/constants";
-import type { CaptionMap, RealtimeEvent, Status, TargetLanguage } from "../lib/types";
+import type { CaptionMap, DisplayMode, RealtimeEvent, Status, TargetLanguage } from "../lib/types";
+
+const RECONNECT_DELAYS_MS = [1000, 3000];
 
 type UseOpenAiTranslationParams = {
   statusRef: MutableRefObject<Status>;
@@ -51,6 +53,16 @@ export function useOpenAiTranslation({
   const peerConnectionsRef = useRef<Partial<Record<TargetLanguage, RTCPeerConnection>>>({});
   const dataChannelsRef = useRef<Partial<Record<TargetLanguage, RTCDataChannel>>>({});
   const connectedTargetsRef = useRef<Set<TargetLanguage>>(new Set());
+  const activeTargetsRef = useRef<TargetLanguage[]>([]);
+  const inputTranscriptTargetRef = useRef<TargetLanguage>(INPUT_TRANSCRIPT_TARGET);
+  const reconnectAttemptsRef = useRef<Partial<Record<TargetLanguage, number>>>({});
+  const reconnectTimersRef = useRef<Partial<Record<TargetLanguage, number>>>({});
+  const sessionEpochRef = useRef(0);
+  const singleSwitchInFlightRef = useRef(false);
+  const connectTranslationRef = useRef<(targetLanguage: TargetLanguage, sourceStream: MediaStream) => Promise<void>>(
+    async () => {}
+  );
+  const handleConnectionFailureRef = useRef<(targetLanguage: TargetLanguage) => void>(() => {});
 
   const createClientSecret = useCallback(
     async (targetLanguage: TargetLanguage) => {
@@ -84,6 +96,68 @@ export function useOpenAiTranslation({
     [getAccessCodeHeaders, openaiApiKeyRef]
   );
 
+  // Closes one target's connection without touching the shared microphone
+  // stream, so the other target (or a reconnect attempt) can keep using it.
+  const closeTargetConnection = useCallback((targetLanguage: TargetLanguage) => {
+    const timer = reconnectTimersRef.current[targetLanguage];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete reconnectTimersRef.current[targetLanguage];
+    }
+
+    const channel = dataChannelsRef.current[targetLanguage];
+    delete dataChannelsRef.current[targetLanguage];
+    channel?.close();
+
+    const peerConnection = peerConnectionsRef.current[targetLanguage];
+    delete peerConnectionsRef.current[targetLanguage];
+    if (peerConnection) {
+      peerConnection.getReceivers().forEach((receiver) => receiver.track?.stop());
+      peerConnection.close();
+    }
+
+    connectedTargetsRef.current.delete(targetLanguage);
+  }, []);
+
+  const handleConnectionFailure = useCallback(
+    (targetLanguage: TargetLanguage) => {
+      if (statusRef.current === "stopping" || statusRef.current === "idle") return;
+
+      const attempts = reconnectAttemptsRef.current[targetLanguage] ?? 0;
+      if (attempts >= RECONNECT_DELAYS_MS.length) {
+        setError(`${targetLanguage.toUpperCase()} translation connection ended. Click Start to reconnect.`);
+        cleanupRealtimeRef.current();
+        setRealtimeStatus("error");
+        return;
+      }
+
+      reconnectAttemptsRef.current[targetLanguage] = attempts + 1;
+      const epoch = sessionEpochRef.current;
+      setRealtimeStatus("connecting");
+      setError(`${targetLanguage.toUpperCase()} connection lost. Reconnecting...`);
+      closeTargetConnection(targetLanguage);
+
+      reconnectTimersRef.current[targetLanguage] = window.setTimeout(() => {
+        delete reconnectTimersRef.current[targetLanguage];
+        if (epoch !== sessionEpochRef.current) return;
+        if (statusRef.current === "stopping" || statusRef.current === "idle" || statusRef.current === "error") return;
+
+        const sourceStream = sourceStreamRef.current;
+        if (!sourceStream) return;
+
+        void connectTranslationRef.current(targetLanguage, sourceStream).catch(() => {
+          if (epoch !== sessionEpochRef.current) return;
+          handleConnectionFailureRef.current(targetLanguage);
+        });
+      }, RECONNECT_DELAYS_MS[attempts]);
+    },
+    [cleanupRealtimeRef, closeTargetConnection, setError, setRealtimeStatus, statusRef]
+  );
+
+  useEffect(() => {
+    handleConnectionFailureRef.current = handleConnectionFailure;
+  }, [handleConnectionFailure]);
+
   const connectTranslation = useCallback(
     async (targetLanguage: TargetLanguage, sourceStream: MediaStream) => {
       const clientSecret = await createClientSecret(targetLanguage);
@@ -95,15 +169,18 @@ export function useOpenAiTranslation({
 
         if (pc.connectionState === "connected") {
           connectedTargetsRef.current.add(targetLanguage);
-          if (connectedTargetsRef.current.size === TARGETS.length) setRealtimeStatus("live");
+          if (reconnectAttemptsRef.current[targetLanguage]) {
+            reconnectAttemptsRef.current[targetLanguage] = 0;
+            setError("");
+          }
+          if (connectedTargetsRef.current.size >= activeTargetsRef.current.length) setRealtimeStatus("live");
           return;
         }
 
         if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
           if (statusRef.current === "stopping" || statusRef.current === "idle") return;
-          setError(`${targetLanguage.toUpperCase()} translation connection ended. Click Start to reconnect.`);
-          cleanupRealtimeRef.current();
-          setRealtimeStatus("error");
+          connectedTargetsRef.current.delete(targetLanguage);
+          handleConnectionFailure(targetLanguage);
         }
       };
 
@@ -135,7 +212,7 @@ export function useOpenAiTranslation({
           }
 
           if (
-            targetLanguage === INPUT_TRANSCRIPT_TARGET &&
+            targetLanguage === inputTranscriptTargetRef.current &&
             event.type === "session.input_transcript.delta" &&
             typeof event.delta === "string"
           ) {
@@ -198,10 +275,10 @@ export function useOpenAiTranslation({
     [
       appendFocusTranslationDelta,
       appendSessionTranscriptText,
-      cleanupRealtimeRef,
       createClientSecret,
       finalizeCurrentFocusSegments,
       getAccessCodeHeaders,
+      handleConnectionFailure,
       lastInputLanguageRef,
       setCaptions,
       setError,
@@ -213,8 +290,12 @@ export function useOpenAiTranslation({
     ]
   );
 
+  useEffect(() => {
+    connectTranslationRef.current = connectTranslation;
+  }, [connectTranslation]);
+
   const startOpenAiTranslation = useCallback(
-    async (audioInputId?: string) => {
+    async (audioInputId: string | undefined, displayMode: DisplayMode) => {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser does not support microphone capture.");
       }
@@ -233,13 +314,72 @@ export function useOpenAiTranslation({
       sourceStreamRef.current = sourceStream;
       void refreshAudioInputs();
 
-      await Promise.all(TARGETS.map((target) => connectTranslation(target.code, sourceStream)));
+      sessionEpochRef.current += 1;
+      reconnectAttemptsRef.current = {};
+
+      // Focus view only displays one translation direction, so a single
+      // session halves the per-minute OpenAI cost. Split view keeps both.
+      const targets: TargetLanguage[] =
+        displayMode === "single"
+          ? [getFocusTargetLanguage(sourceLanguageRef.current)]
+          : TARGETS.map((target) => target.code);
+      activeTargetsRef.current = targets;
+      inputTranscriptTargetRef.current = displayMode === "single" ? targets[0] : INPUT_TRANSCRIPT_TARGET;
+
+      await Promise.all(targets.map((target) => connectTranslation(target, sourceStream)));
       setRealtimeStatus("live");
     },
-    [connectTranslation, refreshAudioInputs, setRealtimeStatus]
+    [connectTranslation, refreshAudioInputs, setRealtimeStatus, sourceLanguageRef]
+  );
+
+  // In single-connection (Focus) mode the translation direction follows the
+  // detected source language; rebuild the connection when it flips.
+  const switchSingleTarget = useCallback(
+    async (newSourceLanguage: TargetLanguage) => {
+      if (activeTargetsRef.current.length !== 1) return;
+      if (statusRef.current !== "live" && statusRef.current !== "connecting") return;
+      if (singleSwitchInFlightRef.current) return;
+
+      const sourceStream = sourceStreamRef.current;
+      if (!sourceStream) return;
+
+      const newTarget = getFocusTargetLanguage(newSourceLanguage);
+      const oldTarget = activeTargetsRef.current[0];
+      if (newTarget === oldTarget) return;
+
+      singleSwitchInFlightRef.current = true;
+      const epoch = sessionEpochRef.current;
+      setRealtimeStatus("connecting");
+      closeTargetConnection(oldTarget);
+      activeTargetsRef.current = [newTarget];
+      inputTranscriptTargetRef.current = newTarget;
+
+      try {
+        await connectTranslation(newTarget, sourceStream);
+        if (epoch === sessionEpochRef.current) setRealtimeStatus("live");
+      } catch (caughtError) {
+        if (epoch === sessionEpochRef.current) {
+          setError(caughtError instanceof Error ? caughtError.message : "Could not switch translation direction.");
+          cleanupRealtimeRef.current();
+          setRealtimeStatus("error");
+        }
+      } finally {
+        singleSwitchInFlightRef.current = false;
+      }
+    },
+    [cleanupRealtimeRef, closeTargetConnection, connectTranslation, setError, setRealtimeStatus, statusRef]
   );
 
   const cleanupOpenAi = useCallback(() => {
+    sessionEpochRef.current += 1;
+    singleSwitchInFlightRef.current = false;
+    reconnectAttemptsRef.current = {};
+
+    Object.values(reconnectTimersRef.current).forEach((timer) => {
+      if (timer !== undefined) window.clearTimeout(timer);
+    });
+    reconnectTimersRef.current = {};
+
     Object.values(dataChannelsRef.current).forEach((channel) => channel?.close());
     dataChannelsRef.current = {};
 
@@ -250,6 +390,8 @@ export function useOpenAiTranslation({
     });
     peerConnectionsRef.current = {};
     connectedTargetsRef.current.clear();
+    activeTargetsRef.current = [];
+    inputTranscriptTargetRef.current = INPUT_TRANSCRIPT_TARGET;
 
     const sourceStream = sourceStreamRef.current;
     sourceStreamRef.current = null;
@@ -258,6 +400,7 @@ export function useOpenAiTranslation({
 
   return {
     startOpenAiTranslation,
+    switchSingleTarget,
     cleanupOpenAi,
   };
 }
