@@ -1606,8 +1606,8 @@ export default function Home() {
         body: JSON.stringify({ targetLanguage, openaiApiKey: openaiApiKeyRef.current || undefined }),
       });
 
-    let sessionResponse = await createSessionRequest();
-    let sessionText = await sessionResponse.text();
+    const sessionResponse = await createSessionRequest();
+    const sessionText = await sessionResponse.text();
     let sessionData: unknown = {};
     try {
       sessionData = sessionText ? JSON.parse(sessionText) : {};
@@ -1718,8 +1718,8 @@ export default function Home() {
           body: offer.sdp,
         });
 
-      let sdpResponse = await createCallRequest();
-      let sdpText = await sdpResponse.text();
+      const sdpResponse = await createCallRequest();
+      const sdpText = await sdpResponse.text();
       let sdpErrorData: unknown = {};
       if (!sdpResponse.ok) {
         try {
@@ -1799,8 +1799,8 @@ export default function Home() {
         body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
       });
 
-    let response = await createConfigRequest();
-    let text = await response.text();
+    const response = await createConfigRequest();
+    const text = await response.text();
     let data: unknown = {};
     try {
       data = text ? JSON.parse(text) : {};

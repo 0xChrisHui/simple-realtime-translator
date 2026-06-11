@@ -5,20 +5,25 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@soniox/client": "^2.1.0",
+    "next": "^15.4.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
     "@types/node": "^22.15.30",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "next": "^15.4.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "eslint": "^9",
+    "eslint-config-next": "^15.5.18",
     "typescript": "^5.8.0"
   },
   "overrides": {
     "postcss": "^8.5.10"
-  },
-  "devDependencies": {}
+  }
 }
