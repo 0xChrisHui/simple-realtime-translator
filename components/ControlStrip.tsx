@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { API_PROVIDERS } from "../lib/constants";
 import type { ApiProvider, AudioInputDevice, DisplayMode, Status } from "../lib/types";
 
@@ -27,7 +28,7 @@ type ControlStripProps = {
   onAwakeChange: (awake: boolean) => void;
 };
 
-export function ControlStrip({
+export const ControlStrip = memo(function ControlStrip({
   status,
   isRunning,
   apiProvider,
@@ -171,4 +172,4 @@ export function ControlStrip({
       </button>
     </header>
   );
-}
+});

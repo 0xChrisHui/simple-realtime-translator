@@ -501,6 +501,38 @@ export default function Home() {
     }
   }, []);
 
+  const handleAudioInputSelect = useCallback(
+    (deviceId: string) => {
+      void handleAudioInputChange(deviceId);
+    },
+    [handleAudioInputChange]
+  );
+  const handleRefreshAudioInputs = useCallback(() => {
+    void refreshAudioInputs();
+  }, [refreshAudioInputs]);
+  const handleToggleFloatingWindow = useCallback(() => {
+    void toggleFloatingWindow();
+  }, [toggleFloatingWindow]);
+  const handleToggleFullscreen = useCallback(() => {
+    void toggleFullscreen();
+  }, [toggleFullscreen]);
+  const handleStart = useCallback(() => {
+    void start();
+  }, [start]);
+  const handleStop = useCallback(() => {
+    void stop();
+  }, [stop]);
+  const closeSavePanel = useCallback(() => setSavePanelOpen(false), []);
+  const handleDeleteTranscriptSession = useCallback(
+    (sessionId: string) => {
+      void deleteTranscriptSession(sessionId);
+    },
+    [deleteTranscriptSession]
+  );
+  const handleClearTranscriptHistory = useCallback(() => {
+    void clearTranscriptSessionHistory();
+  }, [clearTranscriptSessionHistory]);
+
   const isRunning = status === "connecting" || status === "live" || status === "stopping";
   const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
   const apiKeyPlaceholder = apiProvider === "openai" ? "OpenAI key" : "Soniox key";
@@ -533,14 +565,14 @@ export default function Home() {
           floatingWindowOpen={floatingWindowOpen}
           onApiProviderChange={handleApiProviderChange}
           onApiKeyChange={handleApiKeyChange}
-          onAudioInputChange={(deviceId) => void handleAudioInputChange(deviceId)}
-          onRefreshAudioInputs={() => void refreshAudioInputs()}
+          onAudioInputChange={handleAudioInputSelect}
+          onRefreshAudioInputs={handleRefreshAudioInputs}
           onOpenSavePanel={openSavePanel}
           onDisplayModeChange={setDisplayMode}
-          onToggleFloatingWindow={() => void toggleFloatingWindow()}
-          onToggleFullscreen={() => void toggleFullscreen()}
-          onStart={() => void start()}
-          onStop={() => void stop()}
+          onToggleFloatingWindow={handleToggleFloatingWindow}
+          onToggleFullscreen={handleToggleFullscreen}
+          onStart={handleStart}
+          onStop={handleStop}
           onAwakeChange={setControlsAwake}
         />
 
@@ -570,10 +602,10 @@ export default function Home() {
         {savePanelOpen ? (
           <SavePanel
             sessions={transcriptSessions}
-            onClose={() => setSavePanelOpen(false)}
+            onClose={closeSavePanel}
             onDownload={downloadTranscriptSession}
-            onDelete={(sessionId) => void deleteTranscriptSession(sessionId)}
-            onClearAll={() => void clearTranscriptSessionHistory()}
+            onDelete={handleDeleteTranscriptSession}
+            onClearAll={handleClearTranscriptHistory}
           />
         ) : null}
 

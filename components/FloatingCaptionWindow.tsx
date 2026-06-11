@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { CSSProperties } from "react";
 import { getFloatingCaptionText, getFocusTargetLanguage } from "../lib/caption-text";
 import { TARGETS } from "../lib/constants";
@@ -20,7 +21,7 @@ type FloatingCaptionWindowProps = {
   sourceLanguage: TargetLanguage;
 };
 
-export function FloatingCaptionWindow({
+export const FloatingCaptionWindow = memo(function FloatingCaptionWindow({
   captionFontSizes,
   captions,
   displayMode,
@@ -74,4 +75,4 @@ export function FloatingCaptionWindow({
       </div>
     </div>
   );
-}
+});

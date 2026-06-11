@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { formatDuration } from "../lib/caption-text";
 import { formatSessionTimeRange, getTranscriptSessionEndTime } from "../lib/transcript-session";
 import type { StoredTranscriptSession } from "../lib/types";
@@ -12,7 +13,7 @@ type SavePanelProps = {
   onClearAll: () => void;
 };
 
-export function SavePanel({ sessions, onClose, onDownload, onDelete, onClearAll }: SavePanelProps) {
+export const SavePanel = memo(function SavePanel({ sessions, onClose, onDownload, onDelete, onClearAll }: SavePanelProps) {
   return (
     <div className="save-panel-backdrop" role="presentation">
       <section aria-label="Saved transcript sessions" aria-modal="true" className="save-panel" role="dialog">
@@ -59,4 +60,4 @@ export function SavePanel({ sessions, onClose, onDownload, onDelete, onClearAll 
       </section>
     </div>
   );
-}
+});

@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { TARGETS } from "../lib/constants";
 import type { CaptionMap, DisplayMode, FocusTranscriptSegment, TargetLanguage } from "../lib/types";
 
@@ -14,7 +15,7 @@ type CaptionStageProps = {
   setScrollerRef: (code: TargetLanguage, element: HTMLDivElement | null) => void;
 };
 
-export function CaptionStage({
+export const CaptionStage = memo(function CaptionStage({
   displayMode,
   captions,
   focusSegments,
@@ -70,4 +71,4 @@ export function CaptionStage({
       {error ? <div className="error-banner">{error}</div> : null}
     </section>
   );
-}
+});
