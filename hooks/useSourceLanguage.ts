@@ -6,8 +6,8 @@ import {
   SOURCE_LANGUAGE_SWITCH_DELAY_MS,
   SOURCE_LANGUAGE_SWITCH_MAX_GAP_MS,
   SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS,
-  SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE,
 } from "../lib/constants";
+import { getMinSwitchEvidence } from "../lib/languages";
 import type { SourceLanguageSwitchCandidate, TargetLanguage } from "../lib/types";
 
 type UseSourceLanguageParams = {
@@ -86,7 +86,7 @@ export function useSourceLanguage({
       const hasStayedLongEnough = now - candidate.firstSeenAt >= SOURCE_LANGUAGE_SWITCH_DELAY_MS;
       const hasEnoughEvidence =
         candidate.chunks >= SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS &&
-        candidate.evidence >= SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE[candidate.language];
+        candidate.evidence >= getMinSwitchEvidence(candidate.language);
 
       if (hasStayedLongEnough && hasEnoughEvidence) {
         commitSourceLanguage(candidate.language);

@@ -1,9 +1,9 @@
 import {
   appendSavedCaptionDelta,
-  createEmptyCaptionMap,
   formatTimestampForText,
   normalizeTranscriptText,
 } from "./caption-text";
+import { DEFAULT_LANGUAGE_PAIR } from "./languages";
 import {
   isApiProvider,
   isRecord,
@@ -13,28 +13,45 @@ import {
   type CaptionMap,
   type FocusTranscriptSegment,
   type StoredTranscriptSession,
+  type TargetLanguage,
   type TranscriptSession,
   type TranscriptSessionStatus,
 } from "./types";
+
+const DEFAULT_SESSION_LANGUAGES: [TargetLanguage, TargetLanguage] = [DEFAULT_LANGUAGE_PAIR.a, DEFAULT_LANGUAGE_PAIR.b];
+
+// Sessions stored before language selection existed have no languages field.
+export function getSessionLanguages(session: TranscriptSession): [TargetLanguage, TargetLanguage] {
+  return session.languages ?? DEFAULT_SESSION_LANGUAGES;
+}
+
+export function readSessionLanguages(value: unknown): [TargetLanguage, TargetLanguage] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined;
+
+  const [a, b] = value;
+  if (!isTargetLanguage(a) || !isTargetLanguage(b) || a === b) return undefined;
+  return [a, b];
+}
 
 export function getSessionTextSegments(session: TranscriptSession) {
   return session.segments.filter((segment) => normalizeTranscriptText(segment.text));
 }
 
-export function cloneCaptionMap(value: CaptionMap): CaptionMap {
-  return {
-    en: normalizeTranscriptText(value.en),
-    zh: normalizeTranscriptText(value.zh),
-  };
+export function cloneCaptionMap(value: CaptionMap, languages: readonly TargetLanguage[]): CaptionMap {
+  const cloned: CaptionMap = {};
+  languages.forEach((code) => {
+    cloned[code] = normalizeTranscriptText(value[code] ?? "");
+  });
+  return cloned;
 }
 
-export function readTranscriptTextMap(value: unknown): CaptionMap {
-  if (!isRecord(value)) return createEmptyCaptionMap();
-
-  return {
-    en: typeof value.en === "string" ? normalizeTranscriptText(value.en) : "",
-    zh: typeof value.zh === "string" ? normalizeTranscriptText(value.zh) : "",
-  };
+export function readTranscriptTextMap(value: unknown, languages: readonly TargetLanguage[]): CaptionMap {
+  const map: CaptionMap = {};
+  languages.forEach((code) => {
+    const text = isRecord(value) ? value[code] : "";
+    map[code] = typeof text === "string" ? normalizeTranscriptText(text) : "";
+  });
+  return map;
 }
 
 export function createTranscriptTextFromSegments(segments: FocusTranscriptSegment[]) {
@@ -44,21 +61,24 @@ export function createTranscriptTextFromSegments(segments: FocusTranscriptSegmen
 
     return {
       ...transcriptText,
-      [segment.targetLanguage]: appendSavedCaptionDelta(transcriptText[segment.targetLanguage], text),
+      [segment.targetLanguage]: appendSavedCaptionDelta(transcriptText[segment.targetLanguage] ?? "", text),
     };
-  }, createEmptyCaptionMap());
+  }, {});
+}
+
+function hasAnyText(map: CaptionMap) {
+  return Object.values(map).some(Boolean);
 }
 
 export function getSessionTranscriptText(session: TranscriptSession): CaptionMap {
-  const transcriptText = cloneCaptionMap(session.transcriptText);
-  if (transcriptText.en || transcriptText.zh) return transcriptText;
+  const transcriptText = cloneCaptionMap(session.transcriptText, getSessionLanguages(session));
+  if (hasAnyText(transcriptText)) return transcriptText;
 
   return createTranscriptTextFromSegments(getSessionTextSegments(session));
 }
 
 export function hasTranscriptText(session: TranscriptSession) {
-  const transcriptText = getSessionTranscriptText(session);
-  return Boolean(transcriptText.en || transcriptText.zh);
+  return hasAnyText(getSessionTranscriptText(session));
 }
 
 export function getTranscriptSessionEndTime(session: TranscriptSession) {
@@ -88,10 +108,10 @@ export function formatTranscriptSession(session: TranscriptSession) {
     "If you need Chinese, please refer to the second half of the document.",
     "",
     "English",
-    transcriptText.en,
+    transcriptText.en ?? "",
     "",
     "Chinese",
-    transcriptText.zh,
+    transcriptText.zh ?? "",
     "",
   ].join("\n");
 }
@@ -134,10 +154,12 @@ export function normalizeStoredTranscriptSession(value: unknown): StoredTranscri
   const provider = isApiProvider(value.provider) ? value.provider : null;
   const status = isTranscriptSessionStatus(value.status) ? value.status : stoppedAt ? "completed" : "draft";
   const updatedAt = readTimestamp(value.updatedAt) || stoppedAt || startedAt;
+  const languages = readSessionLanguages(value.languages);
   const segments = Array.isArray(value.segments) ? cloneTranscriptSegments(value.segments) : [];
-  const storedTranscriptText = readTranscriptTextMap(value.transcriptText);
-  const transcriptText =
-    storedTranscriptText.en || storedTranscriptText.zh ? storedTranscriptText : createTranscriptTextFromSegments(segments);
+  const storedTranscriptText = readTranscriptTextMap(value.transcriptText, languages ?? DEFAULT_SESSION_LANGUAGES);
+  const transcriptText = Object.values(storedTranscriptText).some(Boolean)
+    ? storedTranscriptText
+    : createTranscriptTextFromSegments(segments);
 
   if (!id || !startedAt || !provider) return null;
 
@@ -146,6 +168,7 @@ export function normalizeStoredTranscriptSession(value: unknown): StoredTranscri
     startedAt,
     stoppedAt,
     provider,
+    ...(languages ? { languages } : {}),
     segments,
     transcriptText,
     downloaded: value.downloaded === true,

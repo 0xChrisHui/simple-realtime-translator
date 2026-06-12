@@ -199,11 +199,11 @@ export function useOpenAiTranslation({
             appendFocusTranslationDelta(targetLanguage, event.delta);
             setTranslationCaptions((previous) => ({
               ...previous,
-              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage] ?? "", event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
             setCaptions((previous) => ({
               ...previous,
-              [targetLanguage]: appendCaptionDelta(previous[targetLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
+              [targetLanguage]: appendCaptionDelta(previous[targetLanguage] ?? "", event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
           }
 
@@ -222,7 +222,7 @@ export function useOpenAiTranslation({
             appendSessionTranscriptText(inputLanguage, event.delta);
             setCaptions((previous) => ({
               ...previous,
-              [inputLanguage]: appendCaptionDelta(previous[inputLanguage], event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
+              [inputLanguage]: appendCaptionDelta(previous[inputLanguage] ?? "", event.delta as string, DISPLAY_CAPTION_MAX_CHARS),
             }));
           }
 

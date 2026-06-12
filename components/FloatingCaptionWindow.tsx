@@ -60,7 +60,7 @@ export const FloatingCaptionWindow = memo(function FloatingCaptionWindow({
             {TARGETS.map((target) => (
               <section className={`floating-caption-card floating-caption-card-${target.code}`} key={target.code}>
                 <span className="floating-language-label">{target.label}</span>
-                <p>{getFloatingCaptionText(captions[target.code], target.placeholder)}</p>
+                <p>{getFloatingCaptionText(captions[target.code] ?? "", target.placeholder)}</p>
               </section>
             ))}
           </div>

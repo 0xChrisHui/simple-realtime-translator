@@ -1,14 +1,17 @@
+import { isLanguageCode, type LanguageCode, type LanguagePair } from "./languages";
+
 export type Status = "idle" | "connecting" | "live" | "stopping" | "error";
 export type ApiProvider = "openai" | "soniox";
-export type TargetLanguage = "en" | "zh";
-export type CaptionMap = Record<TargetLanguage, string>;
+export type TargetLanguage = LanguageCode;
+export type { LanguagePair };
+export type CaptionMap = Partial<Record<TargetLanguage, string>>;
 export type DisplayMode = "dual" | "single";
 export type AudioInputDevice = {
   deviceId: string;
   label: string;
 };
-export type CaptionFontSizeMap = Record<TargetLanguage, number>;
-export type CaptionFontSizeInputMap = Record<TargetLanguage, string>;
+export type CaptionFontSizeMap = Partial<Record<TargetLanguage, number>>;
+export type CaptionFontSizeInputMap = Partial<Record<TargetLanguage, string>>;
 
 export type RealtimeEvent = {
   type?: string;
@@ -38,6 +41,9 @@ export type TranscriptSession = {
   startedAt: number;
   stoppedAt: number;
   provider: ApiProvider;
+  // The language pair the session was recorded with, in pair order. Sessions
+  // stored before language selection existed lack it and default to en/zh.
+  languages?: [TargetLanguage, TargetLanguage];
   segments: FocusTranscriptSegment[];
   transcriptText: CaptionMap;
   downloaded?: boolean;
@@ -66,7 +72,7 @@ export function readTimestamp(value: unknown) {
 }
 
 export function isTargetLanguage(value: unknown): value is TargetLanguage {
-  return value === "en" || value === "zh";
+  return isLanguageCode(value);
 }
 
 export function isApiProvider(value: unknown): value is ApiProvider {

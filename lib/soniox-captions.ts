@@ -1,24 +1,42 @@
 import type { RealtimeResult as SonioxRealtimeResult, RealtimeToken as SonioxRealtimeToken } from "@soniox/client";
 import { appendCaptionDelta, createEmptyCaptionMap, getFocusTargetLanguage } from "./caption-text";
 import { DISPLAY_CAPTION_MAX_CHARS, SONIOX_DEBUG_STORAGE_KEY } from "./constants";
+import { DEFAULT_LANGUAGE_PAIR, getPairLanguages, type LanguagePair } from "./languages";
 import type { CaptionMap, SonioxCaptionBuffer, SonioxTokenKind, TargetLanguage } from "./types";
 
-export function createEmptySonioxCaptionBuffer(): SonioxCaptionBuffer {
+export function createEmptySonioxCaptionBuffer(pair: LanguagePair = DEFAULT_LANGUAGE_PAIR): SonioxCaptionBuffer {
   return {
-    finalDisplay: createEmptyCaptionMap(),
-    partialDisplay: createEmptyCaptionMap(),
-    finalOriginal: createEmptyCaptionMap(),
-    partialOriginal: createEmptyCaptionMap(),
-    finalTranslation: createEmptyCaptionMap(),
-    partialTranslation: createEmptyCaptionMap(),
+    finalDisplay: createEmptyCaptionMap(pair),
+    partialDisplay: createEmptyCaptionMap(pair),
+    finalOriginal: createEmptyCaptionMap(pair),
+    partialOriginal: createEmptyCaptionMap(pair),
+    finalTranslation: createEmptyCaptionMap(pair),
+    partialTranslation: createEmptyCaptionMap(pair),
   };
 }
 
-export function normalizeSonioxLanguage(language: string | undefined): TargetLanguage | null {
+// Aliases Soniox may emit instead of the registry code for a pair language.
+const SONIOX_LANGUAGE_ALIASES: Partial<Record<TargetLanguage, readonly string[]>> = {
+  zh: ["cmn", "yue"],
+  no: ["nb", "nn"],
+};
+
+// Maps a raw Soniox token language onto one side of the active pair, or null
+// for tokens outside the pair (dropped, same as the en/zh-only behavior).
+export function normalizeSonioxLanguage(
+  language: string | undefined,
+  pair: LanguagePair = DEFAULT_LANGUAGE_PAIR
+): TargetLanguage | null {
   const normalized = language?.trim().toLowerCase();
   if (!normalized) return null;
-  if (normalized === "en" || normalized.startsWith("en-")) return "en";
-  if (normalized === "zh" || normalized.startsWith("zh-") || normalized === "cmn" || normalized === "yue") return "zh";
+
+  for (const code of getPairLanguages(pair)) {
+    if (normalized === code || normalized.startsWith(`${code}-`)) return code;
+    if (SONIOX_LANGUAGE_ALIASES[code]?.some((alias) => normalized === alias || normalized.startsWith(`${alias}-`))) {
+      return code;
+    }
+  }
+
   return null;
 }
 
@@ -34,15 +52,18 @@ export function combineSonioxCaptionParts(...parts: string[]) {
   return parts.reduce((combined, part) => combineSonioxCaption(combined, part), "");
 }
 
-export function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer) {
-  const captions: CaptionMap = {
-    en: combineSonioxCaptionParts(buffer.finalDisplay.en, buffer.partialOriginal.en, buffer.partialTranslation.en),
-    zh: combineSonioxCaptionParts(buffer.finalDisplay.zh, buffer.partialOriginal.zh, buffer.partialTranslation.zh),
-  };
-  const translationCaptions: CaptionMap = {
-    en: combineSonioxCaption(buffer.finalTranslation.en, buffer.partialTranslation.en),
-    zh: combineSonioxCaption(buffer.finalTranslation.zh, buffer.partialTranslation.zh),
-  };
+export function getSonioxCaptionMaps(buffer: SonioxCaptionBuffer, pair: LanguagePair = DEFAULT_LANGUAGE_PAIR) {
+  const captions: CaptionMap = {};
+  const translationCaptions: CaptionMap = {};
+
+  getPairLanguages(pair).forEach((code) => {
+    captions[code] = combineSonioxCaptionParts(
+      buffer.finalDisplay[code] ?? "",
+      buffer.partialOriginal[code] ?? "",
+      buffer.partialTranslation[code] ?? ""
+    );
+    translationCaptions[code] = combineSonioxCaption(buffer.finalTranslation[code] ?? "", buffer.partialTranslation[code] ?? "");
+  });
 
   return { captions, translationCaptions };
 }
@@ -51,15 +72,19 @@ export function getSonioxTokenKind(token: SonioxRealtimeToken): SonioxTokenKind 
   return token.translation_status === "translation" ? "translation" : "original";
 }
 
-export function getSonioxOutputLanguage(token: SonioxRealtimeToken, kind: SonioxTokenKind): TargetLanguage | null {
-  const tokenLanguage = normalizeSonioxLanguage(token.language);
+export function getSonioxOutputLanguage(
+  token: SonioxRealtimeToken,
+  kind: SonioxTokenKind,
+  pair: LanguagePair = DEFAULT_LANGUAGE_PAIR
+): TargetLanguage | null {
+  const tokenLanguage = normalizeSonioxLanguage(token.language, pair);
   if (kind !== "translation") return tokenLanguage;
 
-  const sourceLanguage = normalizeSonioxLanguage(token.source_language);
+  const sourceLanguage = normalizeSonioxLanguage(token.source_language, pair);
   if (!sourceLanguage) return tokenLanguage;
   if (tokenLanguage && tokenLanguage !== sourceLanguage) return tokenLanguage;
 
-  return getFocusTargetLanguage(sourceLanguage);
+  return getFocusTargetLanguage(sourceLanguage, pair);
 }
 
 export function isSonioxDebugEnabled() {

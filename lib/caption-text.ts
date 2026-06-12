@@ -1,4 +1,12 @@
 import { FLOATING_CAPTION_MAX_CHARS, MIN_CAPTION_FONT_SIZE } from "./constants";
+import {
+  countLanguageEvidence,
+  DEFAULT_LANGUAGE_PAIR,
+  detectPairLanguage,
+  getOtherPairLanguage,
+  getPairLanguages,
+  type LanguagePair,
+} from "./languages";
 import type { CaptionMap, TargetLanguage } from "./types";
 
 export function getFloatingCaptionText(value: string, fallback: string) {
@@ -25,22 +33,24 @@ export function appendSavedCaptionDelta(previous: string, delta: string) {
   return `${previous}${delta}`.replace(/[ \t\r\n]+/g, " ").trimStart();
 }
 
-export function createEmptyCaptionMap(): CaptionMap {
-  return { en: "", zh: "" };
+export function createEmptyCaptionMap(pair: LanguagePair = DEFAULT_LANGUAGE_PAIR): CaptionMap {
+  const map: CaptionMap = {};
+  getPairLanguages(pair).forEach((code) => {
+    map[code] = "";
+  });
+  return map;
 }
 
-export function detectInputLanguage(delta: string, fallback: TargetLanguage): TargetLanguage {
-  if (/[\u3400-\u9fff]/.test(delta)) return "zh";
-  if (/[A-Za-z]/.test(delta)) return "en";
-  return fallback;
+export function detectInputLanguage(
+  delta: string,
+  fallback: TargetLanguage,
+  pair: LanguagePair = DEFAULT_LANGUAGE_PAIR
+): TargetLanguage {
+  return detectPairLanguage(delta, pair) ?? fallback;
 }
 
 export function getInputLanguageEvidence(delta: string, language: TargetLanguage) {
-  if (language === "zh") {
-    return delta.match(/[\u3400-\u9fff]/g)?.length ?? 0;
-  }
-
-  return delta.match(/[A-Za-z]/g)?.length ?? 0;
+  return countLanguageEvidence(delta, language);
 }
 
 export function isOutputTranscriptDoneEvent(type: string | undefined) {
@@ -51,8 +61,11 @@ export function isOutputTranscriptDoneEvent(type: string | undefined) {
   );
 }
 
-export function getFocusTargetLanguage(sourceLanguage: TargetLanguage): TargetLanguage {
-  return sourceLanguage === "zh" ? "en" : "zh";
+export function getFocusTargetLanguage(
+  sourceLanguage: TargetLanguage,
+  pair: LanguagePair = DEFAULT_LANGUAGE_PAIR
+): TargetLanguage {
+  return getOtherPairLanguage(pair, sourceLanguage);
 }
 
 export function createTranscriptId(prefix: string) {

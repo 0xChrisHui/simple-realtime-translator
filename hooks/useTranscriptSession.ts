@@ -26,6 +26,7 @@ import {
   cloneCaptionMap,
   createStoredTranscriptSnapshot,
   formatTranscriptSession,
+  getSessionLanguages,
   getTranscriptSessionEndTime,
   hasTranscriptText,
   sortStoredTranscriptSessions,
@@ -65,7 +66,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
   const [transcriptSessions, setTranscriptSessions] = useState<StoredTranscriptSession[]>([]);
   const [transcriptReadyVisible, setTranscriptReadyVisible] = useState(false);
 
-  const savedCaptionsRef = useRef<CaptionMap>({ en: "", zh: "" });
+  const savedCaptionsRef = useRef<CaptionMap>(createEmptyCaptionMap());
   const activeTranscriptSessionRef = useRef<StoredTranscriptSession | null>(null);
   const focusPartialSegmentIdsRef = useRef<Partial<Record<TargetLanguage, string>>>({});
   const transcriptAutosaveTimerRef = useRef<number | null>(null);
@@ -165,7 +166,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
   const appendSessionTranscriptText = useCallback(
     (language: TargetLanguage, delta: string, reason: "final" | "partial" = "partial") => {
       const activeSession = activeTranscriptSessionRef.current;
-      const nextText = appendSavedCaptionDelta(savedCaptionsRef.current[language], delta);
+      const nextText = appendSavedCaptionDelta(savedCaptionsRef.current[language] ?? "", delta);
 
       savedCaptionsRef.current = {
         ...savedCaptionsRef.current,
@@ -391,9 +392,9 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
     activeTranscriptSessionRef.current = null;
     focusPartialSegmentIdsRef.current = {};
 
-    const transcriptText = cloneCaptionMap(activeSession.transcriptText);
+    const transcriptText = cloneCaptionMap(activeSession.transcriptText, getSessionLanguages(activeSession));
 
-    if (!transcriptText.en && !transcriptText.zh) {
+    if (!Object.values(transcriptText).some(Boolean)) {
       await deleteStoredTranscriptSessionSafely(activeSession.id);
       return;
     }
@@ -421,7 +422,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
 
   const resetTranscriptCaptureState = useCallback(() => {
     setFocusSegments([]);
-    savedCaptionsRef.current = { en: "", zh: "" };
+    savedCaptionsRef.current = createEmptyCaptionMap();
     focusPartialSegmentIdsRef.current = {};
   }, []);
 

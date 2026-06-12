@@ -21,17 +21,21 @@ import {
   roundCaptionFontSize,
 } from "../lib/caption-text";
 import {
-  DEFAULT_CAPTION_FONT_SIZES,
   MIN_CAPTION_FONT_SIZE,
   MISSING_OPENAI_API_KEY_CAPTION,
   MISSING_OPENAI_API_KEY_MESSAGE,
   OPENAI_API_KEY_STORAGE_KEY,
   SONIOX_API_KEY_STORAGE_KEY,
-  SPLIT_CAPTION_LINE_HEIGHT_RATIO,
   SPLIT_CAPTION_TARGET_LINES,
   TARGETS,
   WATERMARK_IMAGE,
 } from "../lib/constants";
+import {
+  DEFAULT_LANGUAGE_PAIR,
+  getCaptionLineHeightRatio,
+  getDefaultCaptionFontSize,
+  getDefaultCaptionFontSizes,
+} from "../lib/languages";
 import type { TrialDenyReason } from "../lib/trial";
 import type {
   ApiProvider,
@@ -56,10 +60,15 @@ export default function Home() {
   const [savePanelOpen, setSavePanelOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("dual");
   const [error, setError] = useState("");
-  const [captionFontSizes, setCaptionFontSizes] = useState<CaptionFontSizeMap>(DEFAULT_CAPTION_FONT_SIZES);
-  const [captionFontSizeInputs, setCaptionFontSizeInputs] = useState<CaptionFontSizeInputMap>({
-    en: String(DEFAULT_CAPTION_FONT_SIZES.en),
-    zh: String(DEFAULT_CAPTION_FONT_SIZES.zh),
+  const [captionFontSizes, setCaptionFontSizes] = useState<CaptionFontSizeMap>(() =>
+    getDefaultCaptionFontSizes(DEFAULT_LANGUAGE_PAIR)
+  );
+  const [captionFontSizeInputs, setCaptionFontSizeInputs] = useState<CaptionFontSizeInputMap>(() => {
+    const inputs: CaptionFontSizeInputMap = {};
+    TARGETS.forEach(({ code }) => {
+      inputs[code] = String(getDefaultCaptionFontSize(code));
+    });
+    return inputs;
   });
   const [apiProvider, setApiProvider] = useState<ApiProvider>("soniox");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
@@ -74,7 +83,7 @@ export default function Home() {
   const sonioxApiKeyRef = useRef("");
   const sourceLanguageRef = useRef<TargetLanguage>("en");
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
-  const manualCaptionFontSizeOverridesRef = useRef<Record<TargetLanguage, boolean>>({ en: false, zh: false });
+  const manualCaptionFontSizeOverridesRef = useRef<Partial<Record<TargetLanguage, boolean>>>({});
   const cleanupRealtimeRef = useRef<() => void>(() => {});
   const switchSingleTargetRef = useRef<(language: TargetLanguage) => void>(() => {});
   const stopRef = useRef<() => Promise<void>>(async () => {});
@@ -219,16 +228,16 @@ export default function Home() {
       if (!scroller || !paragraph) return;
 
       const paragraphStyle = window.getComputedStyle(paragraph);
-      const currentFontSize = Number.parseFloat(paragraphStyle.fontSize) || DEFAULT_CAPTION_FONT_SIZES[code];
+      const currentFontSize = Number.parseFloat(paragraphStyle.fontSize) || getDefaultCaptionFontSize(code);
       const computedLineHeight = Number.parseFloat(paragraphStyle.lineHeight);
       const lineHeightRatio =
         Number.isFinite(computedLineHeight) && computedLineHeight > 0 && currentFontSize > 0
           ? computedLineHeight / currentFontSize
-          : SPLIT_CAPTION_LINE_HEIGHT_RATIO[code];
+          : getCaptionLineHeightRatio(code);
       const paddingTop = Number.parseFloat(paragraphStyle.paddingTop) || 0;
       const paddingBottom = Number.parseFloat(paragraphStyle.paddingBottom) || 0;
       const availableHeight = scroller.clientHeight - paddingTop - paddingBottom;
-      const targetLines = SPLIT_CAPTION_TARGET_LINES[code];
+      const targetLines = SPLIT_CAPTION_TARGET_LINES;
 
       if (availableHeight <= 0 || lineHeightRatio <= 0) return;
 
@@ -243,7 +252,7 @@ export default function Home() {
 
       TARGETS.forEach(({ code }) => {
         const fittedSize = fittedSizes[code];
-        if (!fittedSize || Math.abs(previous[code] - fittedSize) < 0.05) return;
+        if (!fittedSize || Math.abs((previous[code] ?? 0) - fittedSize) < 0.05) return;
 
         next[code] = fittedSize;
         changed = true;
@@ -540,7 +549,7 @@ export default function Home() {
     (language: TargetLanguage) => {
       setCaptionFontSizeInputs((previous) => ({
         ...previous,
-        [language]: formatCaptionFontSizeInput(captionFontSizes[language]),
+        [language]: formatCaptionFontSizeInput(captionFontSizes[language] ?? getDefaultCaptionFontSize(language)),
       }));
     },
     [captionFontSizes]

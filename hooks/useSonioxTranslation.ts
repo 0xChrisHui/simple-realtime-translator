@@ -10,7 +10,8 @@ import {
 } from "@soniox/client";
 import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { createEmptyCaptionMap, getErrorMessage } from "../lib/caption-text";
-import { SONIOX_FINAL_TOKEN_KEY_LIMIT, SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE } from "../lib/constants";
+import { SONIOX_FINAL_TOKEN_KEY_LIMIT } from "../lib/constants";
+import { getMinSwitchEvidence } from "../lib/languages";
 import {
   appendSonioxCaptionText,
   createEmptySonioxCaptionBuffer,
@@ -181,7 +182,7 @@ export function useSonioxTranslation({
         } else if (sourceLanguageFromToken) {
           trackSourceLanguageEvidence(
             sourceLanguageFromToken,
-            Math.max(SOURCE_LANGUAGE_SWITCH_MIN_EVIDENCE[sourceLanguageFromToken], token.text.trim().length)
+            Math.max(getMinSwitchEvidence(sourceLanguageFromToken), token.text.trim().length)
           );
         }
 
@@ -218,11 +219,11 @@ export function useSonioxTranslation({
           partialTouched[translationStatus].add(language);
         }
 
-        targetBuffer[language] = appendSonioxCaptionText(targetBuffer[language], token.text);
+        targetBuffer[language] = appendSonioxCaptionText(targetBuffer[language] ?? "", token.text);
 
         if (token.is_final) {
           if (finalTokenKey) addSonioxFinalTokenKey(finalTokenKey);
-          buffer.finalDisplay[language] = appendSonioxCaptionText(buffer.finalDisplay[language], token.text);
+          buffer.finalDisplay[language] = appendSonioxCaptionText(buffer.finalDisplay[language] ?? "", token.text);
           appendSessionTranscriptText(language, token.text, "final");
           if (translationStatus === "translation") {
             appendFocusTranslationDelta(language, token.text);
