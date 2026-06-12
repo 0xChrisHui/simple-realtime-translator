@@ -3,7 +3,7 @@ import {
   formatTimestampForText,
   normalizeTranscriptText,
 } from "./caption-text";
-import { DEFAULT_LANGUAGE_PAIR } from "./languages";
+import { DEFAULT_LANGUAGE_PAIR, getLanguageLabel } from "./languages";
 import {
   isApiProvider,
   isRecord,
@@ -96,24 +96,29 @@ export function formatSessionTimeRange(session: TranscriptSession) {
 }
 
 export function formatTranscriptSession(session: TranscriptSession) {
+  const languages = getSessionLanguages(session);
   const transcriptText = getSessionTranscriptText(session);
 
-  return [
+  const lines = [
     "Simple Realtime Translator",
     `Session: ${formatTimestampForText(new Date(session.startedAt))} - ${formatTimestampForText(
       new Date(getTranscriptSessionEndTime(session))
     )}`,
     "",
-    "如果需要中文，请翻到页面下方",
-    "If you need Chinese, please refer to the second half of the document.",
-    "",
-    "English",
-    transcriptText.en ?? "",
-    "",
-    "Chinese",
-    transcriptText.zh ?? "",
-    "",
-  ].join("\n");
+  ];
+
+  // The navigation hint only makes sense for the classic en/zh layout.
+  if (languages.includes("en") && languages.includes("zh")) {
+    lines.push("如果需要中文，请翻到页面下方", "If you need Chinese, please refer to the second half of the document.", "");
+  }
+
+  languages.forEach((code) => {
+    const text = transcriptText[code] ?? "";
+    if (!text) return;
+    lines.push(getLanguageLabel(code), text, "");
+  });
+
+  return lines.join("\n");
 }
 
 export function normalizeStoredTranscriptSegment(value: unknown): FocusTranscriptSegment | null {
