@@ -2,7 +2,6 @@
 
 import { memo } from "react";
 import { API_PROVIDERS, TRIAL_LOW_REMAINING_SECONDS } from "../lib/constants";
-import { getLanguageShortLabel, type PairTarget } from "../lib/languages";
 import { formatTrialCountdown } from "../lib/trial";
 import type { ApiProvider, AudioInputDevice, DisplayMode, LanguagePair, Status, TargetLanguage } from "../lib/types";
 
@@ -23,10 +22,7 @@ type ControlStripProps = {
   floatingWindowOpen: boolean;
   languagePair: LanguagePair;
   languageOptions: LanguageOption[];
-  pairTargets: PairTarget[];
-  focusDirectionLock: TargetLanguage | null;
   onLanguagePairChange: (side: "a" | "b", code: string) => void;
-  onFocusDirectionChange: (lock: TargetLanguage | null) => void;
   onApiProviderChange: (value: string) => void;
   onApiKeyChange: (value: string) => void;
   onAudioInputChange: (deviceId: string) => void;
@@ -55,10 +51,7 @@ export const ControlStrip = memo(function ControlStrip({
   floatingWindowOpen,
   languagePair,
   languageOptions,
-  pairTargets,
-  focusDirectionLock,
   onLanguagePairChange,
-  onFocusDirectionChange,
   onApiProviderChange,
   onApiKeyChange,
   onAudioInputChange,
@@ -215,32 +208,6 @@ export const ControlStrip = memo(function ControlStrip({
           Focus
         </button>
       </div>
-
-      {displayMode === "single" ? (
-        <div aria-label="Focus translation direction" className="segmented-switch direction-switch" role="group">
-          <button
-            aria-pressed={focusDirectionLock === null}
-            className={`switch-option ${focusDirectionLock === null ? "switch-option-active" : ""}`}
-            onClick={() => onFocusDirectionChange(null)}
-            title="Follow the detected spoken language automatically"
-            type="button"
-          >
-            Auto
-          </button>
-          {pairTargets.map((target) => (
-            <button
-              aria-pressed={focusDirectionLock === target.code}
-              className={`switch-option ${focusDirectionLock === target.code ? "switch-option-active" : ""}`}
-              key={target.code}
-              onClick={() => onFocusDirectionChange(focusDirectionLock === target.code ? null : target.code)}
-              title={`Always show ${target.label} translations`}
-              type="button"
-            >
-              {getLanguageShortLabel(target.code)}
-            </button>
-          ))}
-        </div>
-      ) : null}
 
       <button
         aria-pressed={floatingWindowOpen}

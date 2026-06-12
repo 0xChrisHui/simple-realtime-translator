@@ -276,6 +276,14 @@ select {
   padding: 0 8px;
 }
 
+.font-dock .direction-switch {
+  height: 30px;
+}
+
+.font-dock .direction-switch .switch-option {
+  height: 24px;
+}
+
 .font-control {
   align-items: center;
   background: var(--surface);

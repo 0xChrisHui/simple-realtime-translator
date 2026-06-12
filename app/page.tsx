@@ -849,10 +849,7 @@ export default function Home() {
           floatingWindowOpen={floatingWindowOpen}
           languagePair={languagePair}
           languageOptions={languageOptions}
-          pairTargets={pairTargets}
-          focusDirectionLock={focusDirectionLock}
           onLanguagePairChange={handleLanguagePairChange}
-          onFocusDirectionChange={handleFocusDirectionChange}
           onApiProviderChange={handleApiProviderChange}
           onApiKeyChange={handleApiKeyChange}
           onAudioInputChange={handleAudioInputSelect}
@@ -902,7 +899,32 @@ export default function Home() {
 
         {trialNotice ? <TrialEndedCard variant={trialNotice} onClose={closeTrialNotice} /> : null}
 
-        <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption font size controls">
+        <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption display controls">
+          {displayMode === "single" ? (
+            <div aria-label="Focus translation direction" className="segmented-switch direction-switch" role="group">
+              <button
+                aria-pressed={focusDirectionLock === null}
+                className={`switch-option ${focusDirectionLock === null ? "switch-option-active" : ""}`}
+                onClick={() => handleFocusDirectionChange(null)}
+                title="Follow the detected spoken language automatically"
+                type="button"
+              >
+                Auto
+              </button>
+              {pairTargets.map((target) => (
+                <button
+                  aria-pressed={focusDirectionLock === target.code}
+                  className={`switch-option ${focusDirectionLock === target.code ? "switch-option-active" : ""}`}
+                  key={target.code}
+                  onClick={() => handleFocusDirectionChange(focusDirectionLock === target.code ? null : target.code)}
+                  title={`Always show ${target.label} translations`}
+                  type="button"
+                >
+                  {getLanguageShortLabel(target.code)}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {pairTargets.map((target) => (
             <label className="font-control" key={target.code} title={`${target.label} caption font size`}>
               <span>{getLanguageShortLabel(target.code)}</span>
