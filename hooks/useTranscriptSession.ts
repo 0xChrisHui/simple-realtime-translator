@@ -45,6 +45,9 @@ type UseTranscriptSessionParams = {
   apiProviderRef: MutableRefObject<ApiProvider>;
   sourceLanguageRef: MutableRefObject<TargetLanguage>;
   languagePairRef: MutableRefObject<LanguagePair>;
+  // When set, the Focus timeline records this translation direction instead
+  // of following the detected source language.
+  focusTargetLockRef?: MutableRefObject<TargetLanguage | null>;
   setError: (updater: string | ((currentError: string) => string)) => void;
 };
 
@@ -67,6 +70,7 @@ export function useTranscriptSession({
   apiProviderRef,
   sourceLanguageRef,
   languagePairRef,
+  focusTargetLockRef,
   setError,
 }: UseTranscriptSessionParams) {
   const [focusSegments, setFocusSegments] = useState<FocusTranscriptSegment[]>([]);
@@ -301,7 +305,9 @@ export function useTranscriptSession({
       if (!session) return;
 
       const sourceLanguage = sourceLanguageRef.current;
-      if (targetLanguage !== getFocusTargetLanguage(sourceLanguage, languagePairRef.current)) return;
+      const desiredTarget =
+        focusTargetLockRef?.current ?? getFocusTargetLanguage(sourceLanguage, languagePairRef.current);
+      if (targetLanguage !== desiredTarget) return;
 
       const normalizedDelta = delta.replace(/[ \t\r\n]+/g, " ");
       if (!normalizedDelta.trim()) return;
@@ -346,7 +352,7 @@ export function useTranscriptSession({
       publishFocusSegments(session.segments);
       scheduleActiveTranscriptAutosave("partial");
     },
-    [languagePairRef, publishFocusSegments, scheduleActiveTranscriptAutosave, sourceLanguageRef]
+    [focusTargetLockRef, languagePairRef, publishFocusSegments, scheduleActiveTranscriptAutosave, sourceLanguageRef]
   );
 
   const beginTranscriptSession = useCallback(() => {

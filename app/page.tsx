@@ -36,9 +36,14 @@ import {
   getCaptionLineHeightRatio,
   getDefaultCaptionFontSize,
   getDefaultCaptionFontSizes,
+  getLanguageLabel,
+  getLanguageShortLabel,
+  getOpenAiLanguageCodes,
+  getOtherPairLanguage,
   getPairLanguages,
   getPairTargets,
   isLanguageCode,
+  LANGUAGE_CODES,
   toOpenAiLanguagePair,
 } from "../lib/languages";
 import type { TrialDenyReason } from "../lib/trial";
@@ -62,8 +67,10 @@ function buildDefaultFontSizeInputs(pair: LanguagePair): CaptionFontSizeInputMap
 }
 
 type CaptionFontStyle = CSSProperties & {
-  "--caption-font-size-en": string;
-  "--caption-font-size-zh": string;
+  "--caption-font-size-a": string;
+  "--caption-font-size-b": string;
+  "--caption-line-height-a": string;
+  "--caption-line-height-b": string;
   "--watermark-image": string;
 };
 
@@ -87,6 +94,7 @@ export default function Home() {
   const [controlsAwake, setControlsAwake] = useState(false);
   const [trialCountdownSeconds, setTrialCountdownSeconds] = useState<number | null>(null);
   const [trialNotice, setTrialNotice] = useState<TrialNoticeVariant | null>(null);
+  const [focusDirectionLock, setFocusDirectionLock] = useState<TargetLanguage | null>(null);
 
   const statusRef = useRef<Status>("idle");
   const apiProviderRef = useRef<ApiProvider>("soniox");
@@ -97,6 +105,7 @@ export default function Home() {
   // temporarily narrows the selection.
   const sonioxLanguagePairRef = useRef<LanguagePair>(DEFAULT_LANGUAGE_PAIR);
   const applyLanguagePairRef = useRef<(next: LanguagePair) => void>(() => {});
+  const focusTargetLockRef = useRef<TargetLanguage | null>(null);
   const sourceLanguageRef = useRef<TargetLanguage>(DEFAULT_LANGUAGE_PAIR.a);
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const manualCaptionFontSizeOverridesRef = useRef<Partial<Record<TargetLanguage, boolean>>>({});
@@ -128,9 +137,11 @@ export default function Home() {
     downloadTranscriptSession,
     deleteTranscriptSession,
     clearTranscriptSessionHistory,
-  } = useTranscriptSession({ apiProviderRef, sourceLanguageRef, languagePairRef, setError });
+  } = useTranscriptSession({ apiProviderRef, sourceLanguageRef, languagePairRef, focusTargetLockRef, setError });
 
   const handleCommittedSourceLanguageChange = useCallback((language: TargetLanguage) => {
+    // A locked Focus direction overrides automatic source-language switching.
+    if (focusTargetLockRef.current) return;
     switchSingleTargetRef.current(language);
   }, []);
 
@@ -176,6 +187,7 @@ export default function Home() {
   const { startOpenAiTranslation, switchSingleTarget, switchAudioInput, cleanupOpenAi } = useOpenAiTranslation({
     statusRef,
     languagePairRef,
+    focusTargetLockRef,
     setRealtimeStatus,
     setError,
     setCaptions,
@@ -497,6 +509,8 @@ export default function Home() {
     (next: LanguagePair) => {
       languagePairRef.current = next;
       setLanguagePair(next);
+      focusTargetLockRef.current = null;
+      setFocusDirectionLock(null);
       manualCaptionFontSizeOverridesRef.current = {};
       setCaptionFontSizes(getDefaultCaptionFontSizes(next));
       setCaptionFontSizeInputs(buildDefaultFontSizeInputs(next));
@@ -514,6 +528,37 @@ export default function Home() {
   useEffect(() => {
     applyLanguagePairRef.current = applyLanguagePair;
   }, [applyLanguagePair]);
+
+  const handleLanguagePairChange = useCallback((side: "a" | "b", value: string) => {
+    if (statusRef.current !== "idle" && statusRef.current !== "error") return;
+    if (!isLanguageCode(value)) return;
+
+    const current = languagePairRef.current;
+    let next: LanguagePair = side === "a" ? { a: value, b: current.b } : { a: current.a, b: value };
+    // Picking the language already on the other side swaps the pair.
+    if (next.a === next.b) next = { a: current.b, b: current.a };
+    if (apiProviderRef.current === "openai") next = toOpenAiLanguagePair(next);
+
+    sonioxLanguagePairRef.current = next;
+    applyLanguagePairRef.current(next);
+  }, []);
+
+  const handleFocusDirectionChange = useCallback(
+    (lock: TargetLanguage | null) => {
+      focusTargetLockRef.current = lock;
+      setFocusDirectionLock(lock);
+
+      // A live OpenAI Focus session translates into one target only; rebuild
+      // it so the locked (or re-detected) direction takes effect immediately.
+      if (apiProviderRef.current !== "openai") return;
+      if (statusRef.current !== "live" && statusRef.current !== "connecting") return;
+      const desiredSource = lock
+        ? getOtherPairLanguage(languagePairRef.current, lock)
+        : sourceLanguageRef.current;
+      void switchSingleTarget(desiredSource);
+    },
+    [switchSingleTarget]
+  );
 
   const start = useCallback(
     async (audioInputId = selectedAudioInputIdRef.current) => {
@@ -683,20 +728,31 @@ export default function Home() {
     void clearTranscriptSessionHistory();
   }, [clearTranscriptSessionHistory]);
 
+  const languageOptions = useMemo(
+    () =>
+      (apiProvider === "openai" ? getOpenAiLanguageCodes() : LANGUAGE_CODES).map((code) => ({
+        code,
+        label: getLanguageLabel(code),
+      })),
+    [apiProvider]
+  );
+
   const isRunning = status === "connecting" || status === "live" || status === "stopping";
   const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
   const apiKeyPlaceholder = apiProvider === "openai" ? "OpenAI key" : "Soniox key";
   const apiKeyValue = apiProvider === "openai" ? openaiApiKey : sonioxApiKey;
   const singleTargetLanguage = getFocusTargetLanguage(sourceLanguage, languagePair);
   const latestFocusSegment = focusSegments[focusSegments.length - 1];
-  const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
+  const focusPanelLanguage = focusDirectionLock ?? latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
   const focusTarget = pairTargets.find((target) => target.code === focusPanelLanguage) ?? pairTargets[0];
   const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
   const trialMode = apiProvider === "soniox" && !sonioxApiKey.trim();
   const waitingTranslationText = missingOpenAiApiKey ? MISSING_OPENAI_API_KEY_CAPTION : "等待翻译 Waiting translate";
   const captionStyle: CaptionFontStyle = {
-    "--caption-font-size-en": `${captionFontSizes.en}px`,
-    "--caption-font-size-zh": `${captionFontSizes.zh}px`,
+    "--caption-font-size-a": `${captionFontSizes[languagePair.a] ?? getDefaultCaptionFontSize(languagePair.a)}px`,
+    "--caption-font-size-b": `${captionFontSizes[languagePair.b] ?? getDefaultCaptionFontSize(languagePair.b)}px`,
+    "--caption-line-height-a": String(getCaptionLineHeightRatio(languagePair.a)),
+    "--caption-line-height-b": String(getCaptionLineHeightRatio(languagePair.b)),
     "--watermark-image": WATERMARK_IMAGE,
   };
 
@@ -716,6 +772,12 @@ export default function Home() {
           selectedAudioInputId={selectedAudioInputId}
           displayMode={displayMode}
           floatingWindowOpen={floatingWindowOpen}
+          languagePair={languagePair}
+          languageOptions={languageOptions}
+          pairTargets={pairTargets}
+          focusDirectionLock={focusDirectionLock}
+          onLanguagePairChange={handleLanguagePairChange}
+          onFocusDirectionChange={handleFocusDirectionChange}
           onApiProviderChange={handleApiProviderChange}
           onApiKeyChange={handleApiKeyChange}
           onAudioInputChange={handleAudioInputSelect}
@@ -732,6 +794,7 @@ export default function Home() {
         <CaptionStage
           displayMode={displayMode}
           captions={captions}
+          targets={pairTargets}
           focusSegments={focusSegments}
           focusPanelLanguage={focusPanelLanguage}
           focusPanelLabel={focusTarget.label}
@@ -765,35 +828,22 @@ export default function Home() {
         {trialNotice ? <TrialEndedCard variant={trialNotice} onClose={closeTrialNotice} /> : null}
 
         <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption font size controls">
-          <label className="font-control" title="English caption font size">
-            <span>EN</span>
-            <input
-              aria-label="English caption font size"
-              className="font-input"
-              inputMode="numeric"
-              min={MIN_CAPTION_FONT_SIZE}
-              onBlur={() => commitCaptionFontSize("en")}
-              onChange={(event) => handleCaptionFontSizeChange("en", event.currentTarget.value)}
-              step="0.1"
-              type="number"
-              value={captionFontSizeInputs.en}
-            />
-          </label>
-
-          <label className="font-control" title="Chinese caption font size">
-            <span>中文</span>
-            <input
-              aria-label="Chinese caption font size"
-              className="font-input"
-              inputMode="numeric"
-              min={MIN_CAPTION_FONT_SIZE}
-              onBlur={() => commitCaptionFontSize("zh")}
-              onChange={(event) => handleCaptionFontSizeChange("zh", event.currentTarget.value)}
-              step="0.1"
-              type="number"
-              value={captionFontSizeInputs.zh}
-            />
-          </label>
+          {pairTargets.map((target) => (
+            <label className="font-control" key={target.code} title={`${target.label} caption font size`}>
+              <span>{getLanguageShortLabel(target.code)}</span>
+              <input
+                aria-label={`${target.label} caption font size`}
+                className="font-input"
+                inputMode="numeric"
+                min={MIN_CAPTION_FONT_SIZE}
+                onBlur={() => commitCaptionFontSize(target.code)}
+                onChange={(event) => handleCaptionFontSizeChange(target.code, event.currentTarget.value)}
+                step="0.1"
+                type="number"
+                value={captionFontSizeInputs[target.code] ?? ""}
+              />
+            </label>
+          ))}
         </div>
       </main>
 
@@ -804,9 +854,11 @@ export default function Home() {
               captions={captions}
               displayMode={displayMode}
               focusSegments={focusSegments}
+              languagePair={languagePair}
               onClose={closeFloatingWindow}
               singleFallbackCaption={waitingTranslationText}
               sourceLanguage={sourceLanguage}
+              targets={pairTargets}
             />,
             floatingContainer
           )

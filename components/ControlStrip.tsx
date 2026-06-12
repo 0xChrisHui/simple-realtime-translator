@@ -2,8 +2,11 @@
 
 import { memo } from "react";
 import { API_PROVIDERS, TRIAL_LOW_REMAINING_SECONDS } from "../lib/constants";
+import type { PairTarget } from "../lib/languages";
 import { formatTrialCountdown } from "../lib/trial";
-import type { ApiProvider, AudioInputDevice, DisplayMode, Status } from "../lib/types";
+import type { ApiProvider, AudioInputDevice, DisplayMode, LanguagePair, Status, TargetLanguage } from "../lib/types";
+
+export type LanguageOption = { code: TargetLanguage; label: string };
 
 type ControlStripProps = {
   status: Status;
@@ -18,6 +21,12 @@ type ControlStripProps = {
   selectedAudioInputId: string;
   displayMode: DisplayMode;
   floatingWindowOpen: boolean;
+  languagePair: LanguagePair;
+  languageOptions: LanguageOption[];
+  pairTargets: PairTarget[];
+  focusDirectionLock: TargetLanguage | null;
+  onLanguagePairChange: (side: "a" | "b", code: string) => void;
+  onFocusDirectionChange: (lock: TargetLanguage | null) => void;
   onApiProviderChange: (value: string) => void;
   onApiKeyChange: (value: string) => void;
   onAudioInputChange: (deviceId: string) => void;
@@ -44,6 +53,12 @@ export const ControlStrip = memo(function ControlStrip({
   selectedAudioInputId,
   displayMode,
   floatingWindowOpen,
+  languagePair,
+  languageOptions,
+  pairTargets,
+  focusDirectionLock,
+  onLanguagePairChange,
+  onFocusDirectionChange,
   onApiProviderChange,
   onApiKeyChange,
   onAudioInputChange,
@@ -104,6 +119,39 @@ export const ControlStrip = memo(function ControlStrip({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="switch-control" title="Translation language pair">
+        <span className="switch-label">Lang</span>
+        <select
+          aria-label="First language"
+          className="device-select language-select"
+          disabled={isRunning}
+          onChange={(event) => onLanguagePairChange("a", event.currentTarget.value)}
+          value={languagePair.a}
+        >
+          {languageOptions.map((option) => (
+            <option key={option.code} value={option.code}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span aria-hidden="true" className="language-swap">
+          ⇄
+        </span>
+        <select
+          aria-label="Second language"
+          className="device-select language-select"
+          disabled={isRunning}
+          onChange={(event) => onLanguagePairChange("b", event.currentTarget.value)}
+          value={languagePair.b}
+        >
+          {languageOptions.map((option) => (
+            <option key={option.code} value={option.code}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <label className="api-key-control" title={apiKeyLabel}>
@@ -167,6 +215,32 @@ export const ControlStrip = memo(function ControlStrip({
           Focus
         </button>
       </div>
+
+      {displayMode === "single" ? (
+        <div aria-label="Focus translation direction" className="segmented-switch" role="group">
+          <button
+            aria-pressed={focusDirectionLock === null}
+            className={`switch-option ${focusDirectionLock === null ? "switch-option-active" : ""}`}
+            onClick={() => onFocusDirectionChange(null)}
+            title="Follow the detected spoken language automatically"
+            type="button"
+          >
+            Auto
+          </button>
+          {pairTargets.map((target) => (
+            <button
+              aria-pressed={focusDirectionLock === target.code}
+              className={`switch-option ${focusDirectionLock === target.code ? "switch-option-active" : ""}`}
+              key={target.code}
+              onClick={() => onFocusDirectionChange(focusDirectionLock === target.code ? null : target.code)}
+              title={`Always show ${target.label} translations`}
+              type="button"
+            >
+              →{target.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <button
         aria-pressed={floatingWindowOpen}

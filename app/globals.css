@@ -6,10 +6,12 @@
   --surface: rgba(255, 255, 255, 0.08);
   --surface-strong: rgba(255, 255, 255, 0.14);
   --text: #ffffff;
-  --caption-en: #f7fbff;
-  --caption-zh: #e8f2ff;
-  --caption-font-size-en: 60px;
-  --caption-font-size-zh: 70px;
+  --caption-a: #f7fbff;
+  --caption-b: #e8f2ff;
+  --caption-font-size-a: 60px;
+  --caption-font-size-b: 70px;
+  --caption-line-height-a: 1.08;
+  --caption-line-height-b: 1.2;
   --watermark-image: none;
   --watermark-opacity: 0.075;
   --muted: rgba(255, 255, 255, 0.68);
@@ -256,6 +258,17 @@ select {
   color: #ffffff;
 }
 
+.language-select {
+  max-width: clamp(76px, 9vw, 130px);
+  min-width: 60px;
+}
+
+.language-swap {
+  color: var(--faint);
+  flex: 0 0 auto;
+  font-weight: 800;
+}
+
 .font-control {
   align-items: center;
   background: var(--surface);
@@ -423,14 +436,16 @@ select {
   background-size: min(72vw, 920px) auto;
 }
 
-.caption-panel-en {
+/* Panels are styled by pair slot: "a" is the first language of the selected
+   pair, "b" the second. Font metrics arrive via slot CSS variables. */
+.caption-panel-a {
   background: var(--panel-top);
-  color: var(--caption-en);
+  color: var(--caption-a);
 }
 
-.caption-panel-zh {
+.caption-panel-b {
   background: var(--panel-bottom);
-  color: var(--caption-zh);
+  color: var(--caption-b);
 }
 
 .caption-header {
@@ -511,13 +526,14 @@ select {
   word-break: normal;
 }
 
-.caption-panel-en p {
-  font-size: var(--caption-font-size-en);
+.caption-panel-a p {
+  font-size: var(--caption-font-size-a);
+  line-height: var(--caption-line-height-a);
 }
 
-.caption-panel-zh p {
-  font-size: var(--caption-font-size-zh);
-  line-height: 1.2;
+.caption-panel-b p {
+  font-size: var(--caption-font-size-b);
+  line-height: var(--caption-line-height-b);
 }
 
 .focus-timeline {
@@ -536,14 +552,14 @@ select {
   padding: 0;
 }
 
-.caption-panel .focus-segment-en {
-  font-size: var(--caption-font-size-en);
-  line-height: 1.08;
+.caption-panel .focus-segment-a {
+  font-size: var(--caption-font-size-a);
+  line-height: var(--caption-line-height-a);
 }
 
-.caption-panel .focus-segment-zh {
-  font-size: var(--caption-font-size-zh);
-  line-height: 1.2;
+.caption-panel .focus-segment-b {
+  font-size: var(--caption-font-size-b);
+  line-height: var(--caption-line-height-b);
 }
 
 .focus-segment-final {

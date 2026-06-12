@@ -320,6 +320,12 @@ export function getLanguageLabel(code: LanguageCode) {
   return LANGUAGE_DEFINITIONS[code].nativeLabel;
 }
 
+// Compact label for tight UI spots like the font dock: CJK-style languages
+// read best as their native label, alphabetic ones as the upper-cased code.
+export function getLanguageShortLabel(code: LanguageCode) {
+  return getScriptPreset(code).denseGlyphs ? getLanguage(code).nativeLabel : code.toUpperCase();
+}
+
 export function getLanguagePlaceholder(code: LanguageCode) {
   const definition = getLanguage(code);
   return definition.placeholder ?? `Waiting for ${definition.englishLabel} captions`;

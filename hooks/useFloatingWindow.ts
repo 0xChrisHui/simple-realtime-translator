@@ -120,12 +120,12 @@ const FLOATING_WINDOW_CSS = `
     padding: 18px 22px 22px;
   }
 
-  .floating-caption-card-en {
+  .floating-caption-card-a {
     background: #080808;
     color: #f7fbff;
   }
 
-  .floating-caption-card-zh {
+  .floating-caption-card-b {
     background: #101010;
     color: #e8f2ff;
   }
@@ -154,21 +154,22 @@ const FLOATING_WINDOW_CSS = `
     word-break: normal;
   }
 
-  .floating-caption-card-en p {
-    font-size: clamp(28px, 10vw, var(--floating-font-size-en));
+  .floating-caption-card-a p {
+    font-size: clamp(28px, 10vw, var(--floating-font-size-a));
+    line-height: var(--floating-line-height-a, 1.08);
   }
 
-  .floating-caption-card-zh p {
-    font-size: clamp(30px, 11vw, var(--floating-font-size-zh));
-    line-height: 1.18;
+  .floating-caption-card-b p {
+    font-size: clamp(30px, 11vw, var(--floating-font-size-b));
+    line-height: var(--floating-line-height-b, 1.18);
   }
 
-  .floating-caption-card-focus p {
-    font-size: clamp(34px, 12vw, var(--floating-font-size-zh));
+  .floating-caption-card-focus.floating-caption-card-a p {
+    font-size: clamp(34px, 12vw, var(--floating-font-size-a));
   }
 
-  .floating-caption-card-focus.floating-caption-card-en p {
-    font-size: clamp(34px, 12vw, var(--floating-font-size-en));
+  .floating-caption-card-focus.floating-caption-card-b p {
+    font-size: clamp(34px, 12vw, var(--floating-font-size-b));
   }
 `;
 

@@ -18,6 +18,9 @@ const RECONNECT_DELAYS_MS = [1000, 3000];
 type UseOpenAiTranslationParams = {
   statusRef: MutableRefObject<Status>;
   languagePairRef: MutableRefObject<LanguagePair>;
+  // When set, Focus mode opens (and keeps) this translation target instead of
+  // following the detected spoken language.
+  focusTargetLockRef?: MutableRefObject<TargetLanguage | null>;
   setRealtimeStatus: (nextStatus: Status) => void;
   setError: (message: string) => void;
   setCaptions: Dispatch<SetStateAction<CaptionMap>>;
@@ -37,6 +40,7 @@ type UseOpenAiTranslationParams = {
 export function useOpenAiTranslation({
   statusRef,
   languagePairRef,
+  focusTargetLockRef,
   setRealtimeStatus,
   setError,
   setCaptions,
@@ -329,7 +333,7 @@ export function useOpenAiTranslation({
       const pair = languagePairRef.current;
       const targets: TargetLanguage[] =
         displayMode === "single"
-          ? [getFocusTargetLanguage(sourceLanguageRef.current, pair)]
+          ? [focusTargetLockRef?.current ?? getFocusTargetLanguage(sourceLanguageRef.current, pair)]
           : getPairLanguages(pair);
       activeTargetsRef.current = targets;
       inputTranscriptTargetRef.current = displayMode === "single" ? targets[0] : pair.b;
@@ -337,7 +341,7 @@ export function useOpenAiTranslation({
       await Promise.all(targets.map((target) => connectTranslation(target, sourceStream)));
       setRealtimeStatus("live");
     },
-    [connectTranslation, languagePairRef, refreshAudioInputs, setRealtimeStatus, sourceLanguageRef]
+    [connectTranslation, focusTargetLockRef, languagePairRef, refreshAudioInputs, setRealtimeStatus, sourceLanguageRef]
   );
 
   // In single-connection (Focus) mode the translation direction follows the
