@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getOpenAiLanguageCodes } from "../../../lib/languages";
 import { noStoreHeaders } from "../_shared/http";
 import { getClientIdentity } from "../_shared/identity";
 
@@ -9,7 +10,9 @@ type SessionRequest = {
   targetLanguage?: string;
 };
 
-const ALLOWED_TARGET_LANGUAGES = new Set(["en", "zh", "es", "fr", "de", "it", "pt", "ja", "ko"]);
+// The 13 output languages OpenAI Realtime Translation serves, from the
+// language registry so the UI and this allowlist cannot drift apart.
+const ALLOWED_TARGET_LANGUAGES = new Set<string>(getOpenAiLanguageCodes());
 
 export async function GET() {
   return NextResponse.json({

@@ -231,8 +231,9 @@ const recording = client.realtime.record({
 
 注意：
 
-- Soniox `two_way` 一条录音流即可处理中英双向翻译。
-- 不需要像 OpenAI 当前实现那样分别为 `en` 和 `zh` 开两个连接。
+- Soniox `two_way` 一条录音流即可处理双向翻译（`language_a` / `language_b` 自 2026-06 起由用户选择的语言对决定，不再写死 en/zh；见 `lib/languages.ts` 注册表与 `selectable-translation-language-plan-zh-CN.md`）。
+- Soniox 翻译支持 60 种语言、3600+ 语言对（one-way/two-way），完整清单见官方文档 <https://soniox.com/docs/translation/supported-languages>；个别组合若不支持 two_way，会在建立会话时返回错误，前端按普通错误横幅展示。
+- 不需要像 OpenAI 当前实现那样为两种语言分别开两个连接。
 
 ## 8. 字幕 Buffer 设计
 

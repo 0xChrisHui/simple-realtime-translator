@@ -20,14 +20,14 @@ Live English ⇄ Chinese meeting captions in the browser, powered by Soniox or O
 
 ## Features
 
-- English and Chinese realtime translation with OpenAI or Soniox provider switching
+- Realtime two-way translation with a **selectable language pair** — any combination of 60 languages on Soniox, 13 output languages on OpenAI (defaults to English ⇄ Chinese)
 - **3-minute free trial** on the Soniox path — server-issued temporary keys, rate-limited per client and per day
 - Soniox provider using the official Web SDK, direct browser WebSocket, and server-issued temporary API keys
 - OpenAI provider using `gpt-realtime-translate` over WebRTC
-- `Focus View` for one large reverse-translation caption, `Split View` for simultaneous English and Chinese captions
+- `Focus View` for one large reverse-translation caption (with an Auto / locked direction toggle), `Split View` for both languages at once
 - Floating captions (Document Picture-in-Picture) for presenting slides while keeping subtitles visible
 - Manual audio input selection, live input switching, adjustable per-language caption font sizes
-- Local transcript autosave, crash recovery, and one-click `.txt` export
+- Local transcript autosave, crash recovery, and one-click `.txt` export with sections per selected language
 - Optional public-screen watermark through `NEXT_PUBLIC_WATERMARK_IMAGE`
 
 ## Deploy your own
@@ -78,6 +78,8 @@ Browser ──POST /api/soniox/config──▶ trial gate ──▶ Soniox tempo
 ```
 
 Three API routes, no database (trial quotas live in Upstash Redis + a signed cookie). For Soniox, the browser fetches a short-lived single-use temporary key from `/api/soniox/config` and connects directly to Soniox — the long-lived server key never reaches the browser. Without a user key, the route runs the trial gate first and issues a key limited to `TRIAL_SECONDS`. For OpenAI, the app is strictly bring-your-own-key.
+
+The language pair is configured entirely client-side (`lib/languages.ts` is the registry for labels, detection heuristics, and font metrics). Soniox labels every token with its language, so any pair auto-switches the Focus direction; OpenAI exposes no language metadata, so same-script pairs (e.g. English ⇄ Spanish) rely on stopword heuristics and the manual direction lock.
 
 Transcripts autosave to IndexedDB in the browser (recoverable after a crash or refresh) and export as `.txt` from the Save panel.
 
