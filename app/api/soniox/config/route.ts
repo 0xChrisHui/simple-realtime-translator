@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { denyWithoutAccessCode, noStoreHeaders } from "../../_shared/access";
+import { noStoreHeaders } from "../../_shared/http";
 import { getClientIdentity } from "../../_shared/identity";
+import { checkAndConsumeTrial, getTrialSeconds, type TrialDenyReason } from "../../_shared/trial";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,13 @@ type SonioxConfigRequest = {
 const TEMPORARY_KEY_EXPIRES_IN_SECONDS = 60;
 const TEMPORARY_KEY_SINGLE_USE = true;
 const TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS = 18000;
+
+const TRIAL_DENY_MESSAGES: Record<TrialDenyReason, string> = {
+  disabled: "The free trial is not enabled on this deployment. Enter your own Soniox API key.",
+  origin_denied: "This origin is not allowed to use the free trial.",
+  client_exhausted: "Today's free trials are used up for this device. Enter your own Soniox API key or come back tomorrow.",
+  global_exhausted: "Today's free trial budget is used up. Enter your own Soniox API key or come back tomorrow.",
+};
 
 function getSonioxErrorMessage(data: unknown, fallback: string) {
   if (!data || typeof data !== "object") return fallback;
@@ -28,26 +36,15 @@ function getSonioxErrorMessage(data: unknown, fallback: string) {
   return fallback;
 }
 
-export async function POST(request: NextRequest) {
-  const accessDenied = denyWithoutAccessCode(request);
-  if (accessDenied) return accessDenied;
+type TemporaryKeyOptions = {
+  maxSessionDurationSeconds: number;
+  trial?: { seconds: number; setCookie: string };
+};
 
-  let body: SonioxConfigRequest = {};
-  try {
-    body = await request.json();
-  } catch {
-    body = {};
-  }
-
-  const requestApiKey = typeof body.sonioxApiKey === "string" ? body.sonioxApiKey.trim() : "";
-  const apiKey = requestApiKey || process.env.SONIOX_API_KEY;
-
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "Enter a Soniox API key in the app, or set SONIOX_API_KEY on the server." },
-      { status: 400, headers: noStoreHeaders }
-    );
-  }
+async function createTemporaryKey(apiKey: string, request: NextRequest, options: TemporaryKeyOptions) {
+  const responseHeaders: Record<string, string> = options.trial
+    ? { ...noStoreHeaders, "Set-Cookie": options.trial.setCookie }
+    : noStoreHeaders;
 
   try {
     const upstream = await fetch("https://api.soniox.com/v1/auth/temporary-api-key", {
@@ -60,7 +57,7 @@ export async function POST(request: NextRequest) {
         usage_type: "transcribe_websocket",
         expires_in_seconds: TEMPORARY_KEY_EXPIRES_IN_SECONDS,
         single_use: TEMPORARY_KEY_SINGLE_USE,
-        max_session_duration_seconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
+        max_session_duration_seconds: options.maxSessionDurationSeconds,
         client_reference_id: getClientIdentity(request),
       }),
     });
@@ -92,9 +89,10 @@ export async function POST(request: NextRequest) {
       {
         api_key: responseData.api_key,
         expires_at: typeof responseData.expires_at === "string" ? responseData.expires_at : null,
-        max_session_duration_seconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
+        max_session_duration_seconds: options.maxSessionDurationSeconds,
+        ...(options.trial ? { trial: true, trial_seconds: options.trial.seconds } : {}),
       },
-      { status: upstream.status, headers: noStoreHeaders }
+      { status: upstream.status, headers: responseHeaders }
     );
   } catch (caughtError) {
     return NextResponse.json(
@@ -107,4 +105,45 @@ export async function POST(request: NextRequest) {
       { status: 502, headers: noStoreHeaders }
     );
   }
+}
+
+export async function POST(request: NextRequest) {
+  let body: SonioxConfigRequest = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+
+  const requestApiKey = typeof body.sonioxApiKey === "string" ? body.sonioxApiKey.trim() : "";
+
+  // BYOK path: the user's own key, full-length sessions, no quota.
+  if (requestApiKey) {
+    return createTemporaryKey(requestApiKey, request, {
+      maxSessionDurationSeconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
+    });
+  }
+
+  // Trial path: the server key is only ever exposed behind the trial gate.
+  const decision = await checkAndConsumeTrial(request);
+  if (!decision.allowed) {
+    return NextResponse.json(
+      { error: TRIAL_DENY_MESSAGES[decision.reason], reason: decision.reason },
+      { status: 403, headers: noStoreHeaders }
+    );
+  }
+
+  const serverApiKey = process.env.SONIOX_API_KEY;
+  if (!serverApiKey) {
+    return NextResponse.json(
+      { error: "Enter a Soniox API key in the app, or set SONIOX_API_KEY on the server." },
+      { status: 400, headers: noStoreHeaders }
+    );
+  }
+
+  const trialSeconds = getTrialSeconds();
+  return createTemporaryKey(serverApiKey, request, {
+    maxSessionDurationSeconds: trialSeconds,
+    trial: { seconds: trialSeconds, setCookie: decision.setCookie },
+  });
 }

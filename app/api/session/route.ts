@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { denyWithoutAccessCode, noStoreHeaders } from "../_shared/access";
+import { noStoreHeaders } from "../_shared/http";
 import { getClientIdentity } from "../_shared/identity";
 
 export const runtime = "nodejs";
@@ -19,9 +19,6 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const accessDenied = denyWithoutAccessCode(request);
-  if (accessDenied) return accessDenied;
-
   let body: SessionRequest = {};
   try {
     body = await request.json();

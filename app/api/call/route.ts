@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { denyWithoutAccessCode, noStoreHeaders } from "../_shared/access";
+import { noStoreHeaders } from "../_shared/http";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  const accessDenied = denyWithoutAccessCode(request);
-  if (accessDenied) return accessDenied;
-
   const clientSecret = request.headers.get("x-client-secret")?.trim();
   const sdp = await request.text();
 
