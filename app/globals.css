@@ -108,6 +108,8 @@ select {
   padding: 0 10px;
 }
 
+/* Strip controls never shrink: a shrunken container with a min-width child
+   bleeds over its neighbors. Excess width scrolls horizontally instead. */
 .switch-control,
 .device-control {
   align-items: center;
@@ -116,7 +118,7 @@ select {
   border-radius: 8px;
   color: var(--faint);
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   font-size: 0.62rem;
   font-weight: 800;
   gap: 6px;
@@ -202,7 +204,7 @@ select {
   border-radius: 8px;
   color: var(--faint);
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   font-size: 0.62rem;
   font-weight: 800;
   gap: 6px;
@@ -259,14 +261,19 @@ select {
 }
 
 .language-select {
-  max-width: clamp(76px, 9vw, 130px);
-  min-width: 60px;
+  max-width: clamp(58px, 6vw, 92px);
+  min-width: 48px;
 }
 
 .language-swap {
   color: var(--faint);
   flex: 0 0 auto;
   font-weight: 800;
+}
+
+.direction-switch .switch-option {
+  min-width: auto;
+  padding: 0 8px;
 }
 
 .font-control {

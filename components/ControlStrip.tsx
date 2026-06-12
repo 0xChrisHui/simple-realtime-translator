@@ -2,7 +2,7 @@
 
 import { memo } from "react";
 import { API_PROVIDERS, TRIAL_LOW_REMAINING_SECONDS } from "../lib/constants";
-import type { PairTarget } from "../lib/languages";
+import { getLanguageShortLabel, type PairTarget } from "../lib/languages";
 import { formatTrialCountdown } from "../lib/trial";
 import type { ApiProvider, AudioInputDevice, DisplayMode, LanguagePair, Status, TargetLanguage } from "../lib/types";
 
@@ -121,6 +121,22 @@ export const ControlStrip = memo(function ControlStrip({
         </div>
       </div>
 
+      <label className="api-key-control" title={apiKeyLabel}>
+        <span>API</span>
+        <input
+          aria-label={apiKeyLabel}
+          autoCapitalize="none"
+          autoComplete="off"
+          className="api-key-input"
+          disabled={isRunning}
+          onChange={(event) => onApiKeyChange(event.currentTarget.value)}
+          placeholder={apiKeyPlaceholder}
+          spellCheck={false}
+          type="password"
+          value={apiKeyValue}
+        />
+      </label>
+
       <div className="switch-control" title="Translation language pair">
         <span className="switch-label">Lang</span>
         <select
@@ -153,22 +169,6 @@ export const ControlStrip = memo(function ControlStrip({
           ))}
         </select>
       </div>
-
-      <label className="api-key-control" title={apiKeyLabel}>
-        <span>API</span>
-        <input
-          aria-label={apiKeyLabel}
-          autoCapitalize="none"
-          autoComplete="off"
-          className="api-key-input"
-          disabled={isRunning}
-          onChange={(event) => onApiKeyChange(event.currentTarget.value)}
-          placeholder={apiKeyPlaceholder}
-          spellCheck={false}
-          type="password"
-          value={apiKeyValue}
-        />
-      </label>
 
       <label className="device-control" title="Audio input source">
         <span>Input</span>
@@ -217,7 +217,7 @@ export const ControlStrip = memo(function ControlStrip({
       </div>
 
       {displayMode === "single" ? (
-        <div aria-label="Focus translation direction" className="segmented-switch" role="group">
+        <div aria-label="Focus translation direction" className="segmented-switch direction-switch" role="group">
           <button
             aria-pressed={focusDirectionLock === null}
             className={`switch-option ${focusDirectionLock === null ? "switch-option-active" : ""}`}
@@ -236,7 +236,7 @@ export const ControlStrip = memo(function ControlStrip({
               title={`Always show ${target.label} translations`}
               type="button"
             >
-              →{target.label}
+              {getLanguageShortLabel(target.code)}
             </button>
           ))}
         </div>
