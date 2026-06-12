@@ -1,12 +1,15 @@
 "use client";
 
 import { memo } from "react";
-import { API_PROVIDERS } from "../lib/constants";
+import { API_PROVIDERS, TRIAL_LOW_REMAINING_SECONDS } from "../lib/constants";
+import { formatTrialCountdown } from "../lib/trial";
 import type { ApiProvider, AudioInputDevice, DisplayMode, Status } from "../lib/types";
 
 type ControlStripProps = {
   status: Status;
   isRunning: boolean;
+  trialMode: boolean;
+  trialCountdownSeconds: number | null;
   apiProvider: ApiProvider;
   apiKeyLabel: string;
   apiKeyPlaceholder: string;
@@ -31,6 +34,8 @@ type ControlStripProps = {
 export const ControlStrip = memo(function ControlStrip({
   status,
   isRunning,
+  trialMode,
+  trialCountdownSeconds,
   apiProvider,
   apiKeyLabel,
   apiKeyPlaceholder,
@@ -72,6 +77,16 @@ export const ControlStrip = memo(function ControlStrip({
           {status === "error" && "Error"}
         </span>
       </div>
+
+      {trialCountdownSeconds !== null ? (
+        <div
+          aria-label="Trial time remaining"
+          className={`trial-countdown${trialCountdownSeconds <= TRIAL_LOW_REMAINING_SECONDS ? " trial-countdown-low" : ""}`}
+          role="timer"
+        >
+          Trial {formatTrialCountdown(trialCountdownSeconds)}
+        </div>
+      ) : null}
 
       <div className="switch-control" title="API provider">
         <span className="switch-label">Provider</span>
@@ -168,7 +183,7 @@ export const ControlStrip = memo(function ControlStrip({
       </button>
 
       <button className={isRunning ? "tiny-button danger" : "tiny-button primary"} onClick={isRunning ? onStop : onStart} type="button">
-        {isRunning ? "Stop" : "Start"}
+        {isRunning ? "Stop" : trialMode ? "Try 3 min free" : "Start"}
       </button>
     </header>
   );

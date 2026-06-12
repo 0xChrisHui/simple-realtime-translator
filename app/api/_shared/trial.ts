@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { Redis } from "@upstash/redis";
 import { NextRequest } from "next/server";
+import type { TrialDenyReason } from "../../../lib/trial";
 import { getClientIdentity } from "./identity";
 
 // Trial gate for the no-key Soniox path. Four checks run in order: feature
@@ -9,7 +10,7 @@ import { getClientIdentity } from "./identity";
 // Redis timeout, or a misconfigured "full" mode denies the trial instead of
 // risking unmetered spend on the server key.
 
-export type TrialDenyReason = "disabled" | "origin_denied" | "client_exhausted" | "global_exhausted";
+export type { TrialDenyReason };
 
 export type TrialDecision =
   | { allowed: true; setCookie: string }

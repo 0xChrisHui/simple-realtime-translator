@@ -7,6 +7,7 @@ import { CaptionStage } from "../components/CaptionStage";
 import { ControlStrip } from "../components/ControlStrip";
 import { FloatingCaptionWindow } from "../components/FloatingCaptionWindow";
 import { SavePanel } from "../components/SavePanel";
+import { TrialEndedCard, type TrialNoticeVariant } from "../components/TrialEndedCard";
 import { useAudioInputs } from "../hooks/useAudioInputs";
 import { useFloatingWindow } from "../hooks/useFloatingWindow";
 import { useOpenAiTranslation } from "../hooks/useOpenAiTranslation";
@@ -31,6 +32,7 @@ import {
   TARGETS,
   WATERMARK_IMAGE,
 } from "../lib/constants";
+import type { TrialDenyReason } from "../lib/trial";
 import type {
   ApiProvider,
   CaptionFontSizeInputMap,
@@ -63,6 +65,8 @@ export default function Home() {
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [sonioxApiKey, setSonioxApiKey] = useState("");
   const [controlsAwake, setControlsAwake] = useState(false);
+  const [trialCountdownSeconds, setTrialCountdownSeconds] = useState<number | null>(null);
+  const [trialNotice, setTrialNotice] = useState<TrialNoticeVariant | null>(null);
 
   const statusRef = useRef<Status>("idle");
   const apiProviderRef = useRef<ApiProvider>("soniox");
@@ -73,6 +77,7 @@ export default function Home() {
   const manualCaptionFontSizeOverridesRef = useRef<Record<TargetLanguage, boolean>>({ en: false, zh: false });
   const cleanupRealtimeRef = useRef<() => void>(() => {});
   const switchSingleTargetRef = useRef<(language: TargetLanguage) => void>(() => {});
+  const stopRef = useRef<() => Promise<void>>(async () => {});
 
   const setRealtimeStatus = useCallback((nextStatus: Status) => {
     statusRef.current = nextStatus;
@@ -102,6 +107,25 @@ export default function Home() {
 
   const handleCommittedSourceLanguageChange = useCallback((language: TargetLanguage) => {
     switchSingleTargetRef.current(language);
+  }, []);
+
+  const handleTrialSession = useCallback((trialSeconds: number) => {
+    setTrialCountdownSeconds(trialSeconds);
+  }, []);
+
+  const handleTrialDenied = useCallback(
+    (_reason: TrialDenyReason) => {
+      void discardActiveTranscriptSession();
+      setTrialCountdownSeconds(null);
+      setTrialNotice("exhausted");
+    },
+    [discardActiveTranscriptSession]
+  );
+
+  const handleTrialEnded = useCallback(() => {
+    setTrialCountdownSeconds(null);
+    setTrialNotice("ended");
+    void stopRef.current();
   }, []);
 
   const {
@@ -161,6 +185,9 @@ export default function Home() {
       trackSourceLanguage,
       trackSourceLanguageEvidence,
       refreshAudioInputs,
+      onTrialSession: handleTrialSession,
+      onTrialDenied: handleTrialDenied,
+      onTrialEnded: handleTrialEnded,
     });
 
   const cleanupRealtime = useCallback(() => {
@@ -360,6 +387,35 @@ export default function Home() {
     setRealtimeStatus("idle");
   }, [cleanupRealtime, finishActiveTranscriptSession, setRealtimeStatus, stopSonioxRecording]);
 
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
+
+  // The countdown only ticks while live; the server-side key limit is the
+  // real enforcement, this is just the visible mirror of it.
+  const trialCountdownActive = trialCountdownSeconds !== null;
+  useEffect(() => {
+    if (status !== "live" || !trialCountdownActive) return;
+
+    const interval = window.setInterval(() => {
+      setTrialCountdownSeconds((previous) => (previous === null ? null : Math.max(previous - 1, 0)));
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [status, trialCountdownActive]);
+
+  useEffect(() => {
+    if (trialCountdownSeconds !== 0) return;
+
+    setTrialCountdownSeconds(null);
+    setTrialNotice("ended");
+    void stopRef.current();
+  }, [trialCountdownSeconds]);
+
+  useEffect(() => {
+    if (status === "idle" || status === "error") setTrialCountdownSeconds(null);
+  }, [status]);
+
   const resetCaptionState = useCallback(() => {
     setCaptions({ en: "", zh: "" });
     setTranslationCaptions({ en: "", zh: "" });
@@ -371,6 +427,8 @@ export default function Home() {
   const start = useCallback(
     async (audioInputId = selectedAudioInputIdRef.current) => {
       setError("");
+      setTrialNotice(null);
+      setTrialCountdownSeconds(null);
       if (apiProviderRef.current === "openai" && !openaiApiKeyRef.current) {
         resetCaptionState();
         setRealtimeStatus("idle");
@@ -523,6 +581,7 @@ export default function Home() {
     void stop();
   }, [stop]);
   const closeSavePanel = useCallback(() => setSavePanelOpen(false), []);
+  const closeTrialNotice = useCallback(() => setTrialNotice(null), []);
   const handleDeleteTranscriptSession = useCallback(
     (sessionId: string) => {
       void deleteTranscriptSession(sessionId);
@@ -542,6 +601,7 @@ export default function Home() {
   const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
   const focusTarget = TARGETS.find((target) => target.code === focusPanelLanguage) ?? TARGETS[0];
   const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
+  const trialMode = apiProvider === "soniox" && !sonioxApiKey.trim();
   const waitingTranslationText = missingOpenAiApiKey ? MISSING_OPENAI_API_KEY_CAPTION : "等待翻译 Waiting translate";
   const captionStyle: CaptionFontStyle = {
     "--caption-font-size-en": `${captionFontSizes.en}px`,
@@ -555,6 +615,8 @@ export default function Home() {
         <ControlStrip
           status={status}
           isRunning={isRunning}
+          trialMode={trialMode}
+          trialCountdownSeconds={trialCountdownSeconds}
           apiProvider={apiProvider}
           apiKeyLabel={apiKeyLabel}
           apiKeyPlaceholder={apiKeyPlaceholder}
@@ -608,6 +670,8 @@ export default function Home() {
             onClearAll={handleClearTranscriptHistory}
           />
         ) : null}
+
+        {trialNotice ? <TrialEndedCard variant={trialNotice} onClose={closeTrialNotice} /> : null}
 
         <div className={`font-dock ${controlsAwake ? "font-dock-awake" : ""}`} aria-label="Caption font size controls">
           <label className="font-control" title="English caption font size">

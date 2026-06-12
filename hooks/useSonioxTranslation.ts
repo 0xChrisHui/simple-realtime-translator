@@ -22,6 +22,13 @@ import {
   logSonioxTokenDebug,
   normalizeSonioxLanguage,
 } from "../lib/soniox-captions";
+import {
+  FALLBACK_TRIAL_SECONDS,
+  isTrialDenyReason,
+  TrialDeniedError,
+  TrialSessionEndedError,
+  type TrialDenyReason,
+} from "../lib/trial";
 import type { CaptionMap, SonioxCaptionBuffer, SonioxTokenKind, Status, TargetLanguage } from "../lib/types";
 
 type UseSonioxTranslationParams = {
@@ -38,6 +45,9 @@ type UseSonioxTranslationParams = {
   trackSourceLanguage: (inputLanguage: TargetLanguage, delta: string) => void;
   trackSourceLanguageEvidence: (inputLanguage: TargetLanguage, evidence: number) => void;
   refreshAudioInputs: () => Promise<void>;
+  onTrialSession?: (trialSeconds: number) => void;
+  onTrialDenied?: (reason: TrialDenyReason) => void;
+  onTrialEnded?: () => void;
 };
 
 export function useSonioxTranslation({
@@ -54,8 +64,12 @@ export function useSonioxTranslation({
   trackSourceLanguage,
   trackSourceLanguageEvidence,
   refreshAudioInputs,
+  onTrialSession,
+  onTrialDenied,
+  onTrialEnded,
 }: UseSonioxTranslationParams) {
   const sonioxRecordingRef = useRef<SonioxRecording | null>(null);
+  const trialSessionRef = useRef(false);
   const sonioxCaptionBufferRef = useRef<SonioxCaptionBuffer>(createEmptySonioxCaptionBuffer());
   // Dedup keys rotate across two generations so memory stays bounded during
   // multi-hour sessions; lookups check both, inserts go to the current one.
@@ -76,14 +90,17 @@ export function useSonioxTranslation({
   }, []);
 
   const createSonioxConnectionConfig = useCallback(async (): Promise<SonioxConnectionConfig> => {
-    const createConfigRequest = () =>
-      fetch("/api/soniox/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
-        body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
-      });
+    // A reconnect on a trial session would silently consume another trial
+    // slot, so end the session instead of requesting a second key.
+    if (trialSessionRef.current && !sonioxApiKeyRef.current) {
+      throw new TrialSessionEndedError();
+    }
 
-    const response = await createConfigRequest();
+    const response = await fetch("/api/soniox/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
+      body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
+    });
     const text = await response.text();
     let data: unknown = {};
     try {
@@ -92,16 +109,31 @@ export function useSonioxTranslation({
       data = {};
     }
 
+    const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+
     if (!response.ok) {
-      throw new Error(getErrorMessage(data, text || "Failed to create Soniox temporary key."));
+      const message = getErrorMessage(data, text || "Failed to create Soniox temporary key.");
+      if (response.status === 403 && isTrialDenyReason(record.reason)) {
+        throw new TrialDeniedError(record.reason, message);
+      }
+      throw new Error(message);
     }
 
-    if (!data || typeof data !== "object" || typeof (data as Record<string, unknown>).api_key !== "string") {
+    if (typeof record.api_key !== "string") {
       throw new Error("The Soniox temporary key response did not include api_key.");
     }
 
-    return { api_key: (data as Record<string, string>).api_key };
-  }, [getAccessCodeHeaders, sonioxApiKeyRef]);
+    if (record.trial === true) {
+      trialSessionRef.current = true;
+      const trialSeconds =
+        typeof record.trial_seconds === "number" && Number.isFinite(record.trial_seconds) && record.trial_seconds > 0
+          ? Math.floor(record.trial_seconds)
+          : FALLBACK_TRIAL_SECONDS;
+      onTrialSession?.(trialSeconds);
+    }
+
+    return { api_key: record.api_key };
+  }, [getAccessCodeHeaders, onTrialSession, sonioxApiKeyRef]);
 
   const updateSonioxCaptionState = useCallback(() => {
     const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current);
@@ -255,6 +287,8 @@ export function useSonioxTranslation({
         audioConstraints.deviceId = { exact: audioInputId };
       }
 
+      trialSessionRef.current = false;
+
       const client = new SonioxClient({
         config: createSonioxConnectionConfig,
       });
@@ -291,12 +325,32 @@ export function useSonioxTranslation({
       recording.on("finished", () => {
         if (sonioxRecordingRef.current !== recording) return;
         sonioxRecordingRef.current = null;
-        if (statusRef.current !== "stopping") setRealtimeStatus("idle");
+        if (statusRef.current === "stopping") return;
+        setRealtimeStatus("idle");
+        if (trialSessionRef.current) onTrialEnded?.();
       });
       recording.on("error", (caughtError) => {
         if (sonioxRecordingRef.current !== recording) return;
         sonioxRecordingRef.current = null;
         if (statusRef.current === "idle" || statusRef.current === "stopping") return;
+
+        if (
+          caughtError instanceof TrialDeniedError &&
+          (caughtError.reason === "client_exhausted" || caughtError.reason === "global_exhausted")
+        ) {
+          setRealtimeStatus("idle");
+          onTrialDenied?.(caughtError.reason);
+          return;
+        }
+
+        // The server cuts trial sessions at the time limit, which surfaces
+        // here as a websocket error; show the trial-ended card, not a red banner.
+        if (trialSessionRef.current || caughtError instanceof TrialSessionEndedError) {
+          setRealtimeStatus("idle");
+          onTrialEnded?.();
+          return;
+        }
+
         setError(caughtError instanceof Error ? caughtError.message : "Soniox realtime API error.");
         setRealtimeStatus("error");
       });
@@ -312,6 +366,8 @@ export function useSonioxTranslation({
       createSonioxConnectionConfig,
       finalizeCurrentFocusSegments,
       handleSonioxResult,
+      onTrialDenied,
+      onTrialEnded,
       refreshAudioInputs,
       setError,
       setRealtimeStatus,
