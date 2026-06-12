@@ -16,8 +16,7 @@ Live English ⇄ Chinese meeting captions in the browser, powered by Soniox or O
 
 ## Live demo
 
-<!-- TODO(deploy): replace with the real production URL -->
-**[Try it live](https://your-app.vercel.app)** — click **Try 3 min free** and start talking. No sign-up, no key, no configuration: each visitor gets 2 free 3-minute trial sessions per day on the demo deployment. After the trial you can keep using it with your own (free-tier) Soniox key, or deploy your own instance below.
+**[Try it live](https://simple-realtime-translator.vercel.app)** — click **Try 3 min free** and start talking. No sign-up, no key, no configuration: each visitor gets 2 free 3-minute trial sessions per day on the demo deployment. After the trial you can keep using it with your own (free-tier) Soniox key, or deploy your own instance below.
 
 ## Features
 
