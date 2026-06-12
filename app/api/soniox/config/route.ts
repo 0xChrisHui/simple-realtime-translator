@@ -7,11 +7,16 @@ export const runtime = "nodejs";
 
 type SonioxConfigRequest = {
   sonioxApiKey?: string;
+  keyCount?: number;
 };
 
 const TEMPORARY_KEY_EXPIRES_IN_SECONDS = 60;
 const TEMPORARY_KEY_SINGLE_USE = true;
 const TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS = 18000;
+// Split view runs one one-way translation stream per language, so a single
+// gated request may mint up to two keys. The trial quota counts requests,
+// not keys: one Start consumes one trial slot regardless of view.
+const MAX_KEYS_PER_REQUEST = 2;
 
 const TRIAL_DENY_MESSAGES: Record<TrialDenyReason, string> = {
   disabled: "The free trial is not enabled on this deployment. Enter your own Soniox API key.",
@@ -37,15 +42,16 @@ function getSonioxErrorMessage(data: unknown, fallback: string) {
 }
 
 type TemporaryKeyOptions = {
+  keyCount: number;
   maxSessionDurationSeconds: number;
   trial?: { seconds: number; setCookie: string };
 };
 
-async function createTemporaryKey(apiKey: string, request: NextRequest, options: TemporaryKeyOptions) {
-  const responseHeaders: Record<string, string> = options.trial
-    ? { ...noStoreHeaders, "Set-Cookie": options.trial.setCookie }
-    : noStoreHeaders;
+type MintResult =
+  | { ok: true; apiKey: string; expiresAt: string | null; status: number }
+  | { ok: false; response: NextResponse };
 
+async function mintTemporaryKey(apiKey: string, request: NextRequest, maxSessionDurationSeconds: number): Promise<MintResult> {
   try {
     const upstream = await fetch("https://api.soniox.com/v1/auth/temporary-api-key", {
       method: "POST",
@@ -57,7 +63,7 @@ async function createTemporaryKey(apiKey: string, request: NextRequest, options:
         usage_type: "transcribe_websocket",
         expires_in_seconds: TEMPORARY_KEY_EXPIRES_IN_SECONDS,
         single_use: TEMPORARY_KEY_SINGLE_USE,
-        max_session_duration_seconds: options.maxSessionDurationSeconds,
+        max_session_duration_seconds: maxSessionDurationSeconds,
         client_reference_id: getClientIdentity(request),
       }),
     });
@@ -71,40 +77,72 @@ async function createTemporaryKey(apiKey: string, request: NextRequest, options:
     }
 
     if (!upstream.ok) {
-      return NextResponse.json(
-        { error: getSonioxErrorMessage(data, text || "Failed to create Soniox temporary key.") },
-        { status: upstream.status, headers: noStoreHeaders }
-      );
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { error: getSonioxErrorMessage(data, text || "Failed to create Soniox temporary key.") },
+          { status: upstream.status, headers: noStoreHeaders }
+        ),
+      };
     }
 
     const responseData = data as Record<string, unknown>;
     if (typeof responseData.api_key !== "string") {
-      return NextResponse.json(
-        { error: "Soniox temporary key response did not include api_key." },
-        { status: 502, headers: noStoreHeaders }
-      );
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { error: "Soniox temporary key response did not include api_key." },
+          { status: 502, headers: noStoreHeaders }
+        ),
+      };
     }
 
-    return NextResponse.json(
-      {
-        api_key: responseData.api_key,
-        expires_at: typeof responseData.expires_at === "string" ? responseData.expires_at : null,
-        max_session_duration_seconds: options.maxSessionDurationSeconds,
-        ...(options.trial ? { trial: true, trial_seconds: options.trial.seconds } : {}),
-      },
-      { status: upstream.status, headers: responseHeaders }
-    );
+    return {
+      ok: true,
+      apiKey: responseData.api_key,
+      expiresAt: typeof responseData.expires_at === "string" ? responseData.expires_at : null,
+      status: upstream.status,
+    };
   } catch (caughtError) {
-    return NextResponse.json(
-      {
-        error:
-          caughtError instanceof Error
-            ? `Could not reach Soniox temporary key endpoint: ${caughtError.message}`
-            : "Could not reach Soniox temporary key endpoint.",
-      },
-      { status: 502, headers: noStoreHeaders }
-    );
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error:
+            caughtError instanceof Error
+              ? `Could not reach Soniox temporary key endpoint: ${caughtError.message}`
+              : "Could not reach Soniox temporary key endpoint.",
+        },
+        { status: 502, headers: noStoreHeaders }
+      ),
+    };
   }
+}
+
+async function createTemporaryKeys(apiKey: string, request: NextRequest, options: TemporaryKeyOptions) {
+  const responseHeaders: Record<string, string> = options.trial
+    ? { ...noStoreHeaders, "Set-Cookie": options.trial.setCookie }
+    : noStoreHeaders;
+
+  const results = await Promise.all(
+    Array.from({ length: options.keyCount }, () => mintTemporaryKey(apiKey, request, options.maxSessionDurationSeconds))
+  );
+
+  const failure = results.find((result): result is Extract<MintResult, { ok: false }> => !result.ok);
+  if (failure) return failure.response;
+
+  const minted = results as Array<Extract<MintResult, { ok: true }>>;
+
+  return NextResponse.json(
+    {
+      api_key: minted[0].apiKey,
+      api_keys: minted.map((result) => result.apiKey),
+      expires_at: minted[0].expiresAt,
+      max_session_duration_seconds: options.maxSessionDurationSeconds,
+      ...(options.trial ? { trial: true, trial_seconds: options.trial.seconds } : {}),
+    },
+    { status: minted[0].status, headers: responseHeaders }
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -116,10 +154,15 @@ export async function POST(request: NextRequest) {
   }
 
   const requestApiKey = typeof body.sonioxApiKey === "string" ? body.sonioxApiKey.trim() : "";
+  const keyCount =
+    typeof body.keyCount === "number" && Number.isInteger(body.keyCount)
+      ? Math.min(Math.max(body.keyCount, 1), MAX_KEYS_PER_REQUEST)
+      : 1;
 
   // BYOK path: the user's own key, full-length sessions, no quota.
   if (requestApiKey) {
-    return createTemporaryKey(requestApiKey, request, {
+    return createTemporaryKeys(requestApiKey, request, {
+      keyCount,
       maxSessionDurationSeconds: TEMPORARY_KEY_MAX_SESSION_DURATION_SECONDS,
     });
   }
@@ -142,7 +185,8 @@ export async function POST(request: NextRequest) {
   }
 
   const trialSeconds = getTrialSeconds();
-  return createTemporaryKey(serverApiKey, request, {
+  return createTemporaryKeys(serverApiKey, request, {
+    keyCount,
     maxSessionDurationSeconds: trialSeconds,
     trial: { seconds: trialSeconds, setCookie: decision.setCookie },
   });

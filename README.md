@@ -20,7 +20,8 @@ Live English ⇄ Chinese meeting captions in the browser, powered by Soniox or O
 
 ## Features
 
-- Realtime two-way translation with a **selectable language pair** — any combination of 60 languages on Soniox, 13 output languages on OpenAI (defaults to English ⇄ Chinese)
+- Realtime translation with a **selectable language pair** — any combination of 60 languages on Soniox, 13 output languages on OpenAI (defaults to English ⇄ Chinese)
+- **Third-language coverage on Soniox**: every stream runs one-way translation ("translate everything into X"), so speech outside the selected pair still produces captions; Split view runs one stream per language (double the per-hour audio cost, ≈ `$0.24–$0.36/hour`)
 - **3-minute free trial** on the Soniox path — server-issued temporary keys, rate-limited per client and per day
 - Soniox provider using the official Web SDK, direct browser WebSocket, and server-issued temporary API keys
 - OpenAI provider using `gpt-realtime-translate` over WebRTC
@@ -60,7 +61,7 @@ Both providers work with a key entered directly in the app (stored only in your 
 
 | Provider | Where to get an API key | Best fit | Estimated live caption cost |
 | --- | --- | --- | --- |
-| Soniox | [Build with Soniox](https://console.soniox.com/) (sign-up includes free credits), [pricing](https://soniox.com/pricing) | Long meetings and cost-sensitive bilingual captions | about `$0.12–$0.18/hour` for this app's realtime caption/translation use |
+| Soniox | [Build with Soniox](https://console.soniox.com/) (sign-up includes free credits), [pricing](https://soniox.com/pricing) | Long meetings and cost-sensitive bilingual captions | Focus view about `$0.12–$0.18/hour` (one stream); Split view about `$0.24–$0.36/hour` (two one-way streams, one per language) |
 | OpenAI | [API keys](https://platform.openai.com/api-keys), [pricing](https://openai.com/api/pricing/) | OpenAI Realtime Translation with WebRTC | Focus view about `$2.04/hour` (one `gpt-realtime-translate` session at `$0.034/min`); Split view about `$4.08/hour` (two sessions, one per caption direction) |
 
 Recommended default for long English/Chinese conference captions: Soniox — it is much cheaper for long sessions. For OpenAI, the connection layout is decided when you click `Start`: Focus view opens a single translation session that follows the detected spoken language, Split view opens two sessions. Pricing changes over time; check the provider pages before high-volume use.
@@ -79,7 +80,7 @@ Browser ──POST /api/soniox/config──▶ trial gate ──▶ Soniox tempo
 
 Three API routes, no database (trial quotas live in Upstash Redis + a signed cookie). For Soniox, the browser fetches a short-lived single-use temporary key from `/api/soniox/config` and connects directly to Soniox — the long-lived server key never reaches the browser. Without a user key, the route runs the trial gate first and issues a key limited to `TRIAL_SECONDS`. For OpenAI, the app is strictly bring-your-own-key.
 
-The language pair is configured entirely client-side (`lib/languages.ts` is the registry for labels, detection heuristics, and font metrics). Soniox labels every token with its language, so any pair auto-switches the Focus direction; OpenAI exposes no language metadata, so same-script pairs (e.g. English ⇄ Spanish) rely on stopword heuristics and the manual direction lock.
+The language pair is configured entirely client-side (`lib/languages.ts` is the registry for labels, detection heuristics, and font metrics). Soniox sessions run one-way translation streams — one per language in Split view, one (following the detected speaker or the direction lock) in Focus view — so speech in any language, including ones outside the pair, is always translated. A Start mints every key the session needs in one gated request, so a trial consumes one slot regardless of view; direction flips and view switches rebuild the session (and on trial, consume a fresh slot with a reset countdown). OpenAI exposes no language metadata, so same-script pairs (e.g. English ⇄ Spanish) rely on stopword heuristics and the manual direction lock.
 
 Transcripts autosave to IndexedDB in the browser (recoverable after a crash or refresh) and export as `.txt` from the Save panel.
 

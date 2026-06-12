@@ -106,6 +106,9 @@ export default function Home() {
   const sonioxLanguagePairRef = useRef<LanguagePair>(DEFAULT_LANGUAGE_PAIR);
   const applyLanguagePairRef = useRef<(next: LanguagePair) => void>(() => {});
   const focusTargetLockRef = useRef<TargetLanguage | null>(null);
+  const displayModeRef = useRef<DisplayMode>("dual");
+  const restartSonioxSessionRef = useRef<(mode?: DisplayMode) => Promise<void>>(async () => {});
+  const sonioxRestartInFlightRef = useRef(false);
   const sourceLanguageRef = useRef<TargetLanguage>(DEFAULT_LANGUAGE_PAIR.a);
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const manualCaptionFontSizeOverridesRef = useRef<Partial<Record<TargetLanguage, boolean>>>({});
@@ -142,6 +145,12 @@ export default function Home() {
   const handleCommittedSourceLanguageChange = useCallback((language: TargetLanguage) => {
     // A locked Focus direction overrides automatic source-language switching.
     if (focusTargetLockRef.current) return;
+    if (apiProviderRef.current === "soniox") {
+      // Soniox one_way streams translate into a fixed target; a Focus session
+      // follows the speaker by restarting toward the new direction.
+      if (displayModeRef.current === "single") void restartSonioxSessionRef.current();
+      return;
+    }
     switchSingleTargetRef.current(language);
   }, []);
 
@@ -151,11 +160,14 @@ export default function Home() {
 
   const handleTrialDenied = useCallback(
     (_reason: TrialDenyReason) => {
-      void discardActiveTranscriptSession();
+      // Denial can also hit mid-session (a Focus direction flip consuming the
+      // last slot), so finish — which saves captured text and deletes empty
+      // drafts — rather than discard.
+      void finishActiveTranscriptSession();
       setTrialCountdownSeconds(null);
       setTrialNotice("exhausted");
     },
-    [discardActiveTranscriptSession]
+    [finishActiveTranscriptSession]
   );
 
   const handleTrialEnded = useCallback(() => {
@@ -213,6 +225,8 @@ export default function Home() {
   } = useSonioxTranslation({
       statusRef,
       languagePairRef,
+      sourceLanguageRef,
+      focusTargetLockRef,
       setRealtimeStatus,
       setError,
       setCaptions,
@@ -238,6 +252,10 @@ export default function Home() {
   useEffect(() => {
     cleanupRealtimeRef.current = cleanupRealtime;
   }, [cleanupRealtime]);
+
+  useEffect(() => {
+    displayModeRef.current = displayMode;
+  }, [displayMode]);
 
   useEffect(() => {
     switchSingleTargetRef.current = (language: TargetLanguage) => {
@@ -548,10 +566,15 @@ export default function Home() {
       focusTargetLockRef.current = lock;
       setFocusDirectionLock(lock);
 
-      // A live OpenAI Focus session translates into one target only; rebuild
-      // it so the locked (or re-detected) direction takes effect immediately.
-      if (apiProviderRef.current !== "openai") return;
       if (statusRef.current !== "live" && statusRef.current !== "connecting") return;
+
+      // A live Focus session translates into one target only; rebuild it so
+      // the locked (or re-detected) direction takes effect immediately.
+      if (apiProviderRef.current === "soniox") {
+        if (displayModeRef.current === "single") void restartSonioxSessionRef.current();
+        return;
+      }
+
       const desiredSource = lock
         ? getOtherPairLanguage(languagePairRef.current, lock)
         : sourceLanguageRef.current;
@@ -581,7 +604,7 @@ export default function Home() {
         if (apiProviderRef.current === "openai") {
           await startOpenAiTranslation(audioInputId, displayMode);
         } else {
-          await startSonioxTranslation(audioInputId);
+          await startSonioxTranslation(audioInputId, displayMode);
         }
       } catch (caughtError) {
         cleanupRealtime();
@@ -630,7 +653,7 @@ export default function Home() {
       setRealtimeStatus("connecting");
 
       try {
-        await startSonioxTranslation(deviceId);
+        await startSonioxTranslation(deviceId, displayModeRef.current);
       } catch (caughtError) {
         cleanupRealtime();
         await finishActiveTranscriptSession();
@@ -648,6 +671,58 @@ export default function Home() {
       stopSonioxRecording,
       switchAudioInput,
     ]
+  );
+
+  // Rebuilds the live Soniox session in place (transcript and captions kept)
+  // so one_way streams can change target or stream count: Focus direction
+  // flips, direction-lock changes, and Split/Focus switches all land here.
+  const restartSonioxSession = useCallback(
+    async (mode?: DisplayMode) => {
+      if (apiProviderRef.current !== "soniox") return;
+      if (statusRef.current !== "live" && statusRef.current !== "connecting") return;
+      if (sonioxRestartInFlightRef.current) return;
+
+      sonioxRestartInFlightRef.current = true;
+      try {
+        setRealtimeStatus("stopping");
+        await stopSonioxRecording();
+        resetSonioxFinalTokenKeys();
+        setRealtimeStatus("connecting");
+        await startSonioxTranslation(selectedAudioInputIdRef.current, mode ?? displayModeRef.current);
+      } catch (caughtError) {
+        cleanupRealtime();
+        await finishActiveTranscriptSession();
+        setRealtimeStatus("error");
+        setError(caughtError instanceof Error ? caughtError.message : "Could not restart the Soniox session.");
+      } finally {
+        sonioxRestartInFlightRef.current = false;
+      }
+    },
+    [
+      cleanupRealtime,
+      finishActiveTranscriptSession,
+      resetSonioxFinalTokenKeys,
+      selectedAudioInputIdRef,
+      setRealtimeStatus,
+      startSonioxTranslation,
+      stopSonioxRecording,
+    ]
+  );
+
+  useEffect(() => {
+    restartSonioxSessionRef.current = restartSonioxSession;
+  }, [restartSonioxSession]);
+
+  const handleDisplayModeChange = useCallback(
+    (mode: DisplayMode) => {
+      setDisplayMode(mode);
+      displayModeRef.current = mode;
+      // Soniox stream layout differs per view (one stream in Focus, two in
+      // Split); apply it to the live session. OpenAI keeps its documented
+      // behavior of reconfiguring only on the next Start.
+      if (apiProviderRef.current === "soniox") void restartSonioxSession(mode);
+    },
+    [restartSonioxSession]
   );
 
   const toggleFullscreen = useCallback(async () => {
@@ -783,7 +858,7 @@ export default function Home() {
           onAudioInputChange={handleAudioInputSelect}
           onRefreshAudioInputs={handleRefreshAudioInputs}
           onOpenSavePanel={openSavePanel}
-          onDisplayModeChange={setDisplayMode}
+          onDisplayModeChange={handleDisplayModeChange}
           onToggleFloatingWindow={handleToggleFloatingWindow}
           onToggleFullscreen={handleToggleFullscreen}
           onStart={handleStart}

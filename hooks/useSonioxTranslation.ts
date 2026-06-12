@@ -9,7 +9,7 @@ import {
   type SonioxConnectionConfig,
 } from "@soniox/client";
 import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { createEmptyCaptionMap, getErrorMessage } from "../lib/caption-text";
+import { createEmptyCaptionMap, getErrorMessage, getFocusTargetLanguage } from "../lib/caption-text";
 import { SONIOX_FINAL_TOKEN_KEY_LIMIT } from "../lib/constants";
 import { getMinSwitchEvidence, getPairLanguages } from "../lib/languages";
 import {
@@ -30,11 +30,42 @@ import {
   TrialSessionEndedError,
   type TrialDenyReason,
 } from "../lib/trial";
-import type { CaptionMap, LanguagePair, SonioxCaptionBuffer, SonioxTokenKind, Status, TargetLanguage } from "../lib/types";
+import type {
+  CaptionMap,
+  DisplayMode,
+  LanguagePair,
+  SonioxCaptionBuffer,
+  SonioxTokenKind,
+  Status,
+  TargetLanguage,
+} from "../lib/types";
+
+// Every Soniox session now runs one_way translation streams so that speech in
+// ANY language — including languages outside the selected pair — is always
+// translated. Split view runs one stream per pair language (双倍音频费用,
+// deliberate trade-off); Focus view runs a single stream whose target follows
+// the detected source language or the manual direction lock.
+
+type SonioxRecordingRole = {
+  index: number;
+  // Translation tokens this recording is allowed to display; null shows all.
+  // In split mode each stream only contributes its own target's translations.
+  translationFilter: TargetLanguage | null;
+  // Exactly one recording transcribes originals, drives language detection,
+  // and finalizes focus segments, so duplicates never reach the buffers.
+  isOriginalSource: boolean;
+};
+
+type ActiveSonioxRecording = {
+  recording: SonioxRecording;
+  role: SonioxRecordingRole;
+};
 
 type UseSonioxTranslationParams = {
   statusRef: MutableRefObject<Status>;
   languagePairRef: MutableRefObject<LanguagePair>;
+  sourceLanguageRef: MutableRefObject<TargetLanguage>;
+  focusTargetLockRef: MutableRefObject<TargetLanguage | null>;
   setRealtimeStatus: (nextStatus: Status) => void;
   setError: (message: string) => void;
   setCaptions: Dispatch<SetStateAction<CaptionMap>>;
@@ -55,6 +86,8 @@ type UseSonioxTranslationParams = {
 export function useSonioxTranslation({
   statusRef,
   languagePairRef,
+  sourceLanguageRef,
+  focusTargetLockRef,
   setRealtimeStatus,
   setError,
   setCaptions,
@@ -71,8 +104,12 @@ export function useSonioxTranslation({
   onTrialDenied,
   onTrialEnded,
 }: UseSonioxTranslationParams) {
-  const sonioxRecordingRef = useRef<SonioxRecording | null>(null);
+  const sonioxRecordingsRef = useRef<ActiveSonioxRecording[]>([]);
+  const connectedRecordingIndicesRef = useRef<Set<number>>(new Set());
+  const plannedRecordingCountRef = useRef(0);
   const trialSessionRef = useRef(false);
+  // Keys minted in one gated batch request, handed to recordings as they connect.
+  const keyStashRef = useRef<string[]>([]);
   const sonioxCaptionBufferRef = useRef<SonioxCaptionBuffer>(createEmptySonioxCaptionBuffer());
   // Dedup keys rotate across two generations so memory stays bounded during
   // multi-hour sessions; lookups check both, inserts go to the current one.
@@ -92,51 +129,67 @@ export function useSonioxTranslation({
     }
   }, []);
 
+  const fetchSonioxKeys = useCallback(
+    async (keyCount: number): Promise<string[]> => {
+      const response = await fetch("/api/soniox/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
+        body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined, keyCount }),
+      });
+      const text = await response.text();
+      let data: unknown = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = {};
+      }
+
+      const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+
+      if (!response.ok) {
+        const message = getErrorMessage(data, text || "Failed to create Soniox temporary key.");
+        if (response.status === 403 && isTrialDenyReason(record.reason)) {
+          throw new TrialDeniedError(record.reason, message);
+        }
+        throw new Error(message);
+      }
+
+      const keys = Array.isArray(record.api_keys)
+        ? record.api_keys.filter((key): key is string => typeof key === "string")
+        : typeof record.api_key === "string"
+          ? [record.api_key]
+          : [];
+      if (keys.length < keyCount) {
+        throw new Error("The Soniox temporary key response did not include enough api_keys.");
+      }
+
+      if (record.trial === true) {
+        trialSessionRef.current = true;
+        const trialSeconds =
+          typeof record.trial_seconds === "number" && Number.isFinite(record.trial_seconds) && record.trial_seconds > 0
+            ? Math.floor(record.trial_seconds)
+            : FALLBACK_TRIAL_SECONDS;
+        onTrialSession?.(trialSeconds);
+      }
+
+      return keys;
+    },
+    [getAccessCodeHeaders, onTrialSession, sonioxApiKeyRef]
+  );
+
   const createSonioxConnectionConfig = useCallback(async (): Promise<SonioxConnectionConfig> => {
-    // A reconnect on a trial session would silently consume another trial
-    // slot, so end the session instead of requesting a second key.
+    const stashedKey = keyStashRef.current.shift();
+    if (stashedKey) return { api_key: stashedKey };
+
+    // No stashed key means the SDK is reconnecting. A trial reconnect would
+    // silently consume another trial slot, so end the session instead.
     if (trialSessionRef.current && !sonioxApiKeyRef.current) {
       throw new TrialSessionEndedError();
     }
 
-    const response = await fetch("/api/soniox/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...getAccessCodeHeaders() },
-      body: JSON.stringify({ sonioxApiKey: sonioxApiKeyRef.current || undefined }),
-    });
-    const text = await response.text();
-    let data: unknown = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = {};
-    }
-
-    const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
-
-    if (!response.ok) {
-      const message = getErrorMessage(data, text || "Failed to create Soniox temporary key.");
-      if (response.status === 403 && isTrialDenyReason(record.reason)) {
-        throw new TrialDeniedError(record.reason, message);
-      }
-      throw new Error(message);
-    }
-
-    if (typeof record.api_key !== "string") {
-      throw new Error("The Soniox temporary key response did not include api_key.");
-    }
-
-    if (record.trial === true) {
-      trialSessionRef.current = true;
-      const trialSeconds =
-        typeof record.trial_seconds === "number" && Number.isFinite(record.trial_seconds) && record.trial_seconds > 0
-          ? Math.floor(record.trial_seconds)
-          : FALLBACK_TRIAL_SECONDS;
-      onTrialSession?.(trialSeconds);
-    }
-
-    return { api_key: record.api_key };
-  }, [getAccessCodeHeaders, onTrialSession, sonioxApiKeyRef]);
+    const [key] = await fetchSonioxKeys(1);
+    return { api_key: key };
+  }, [fetchSonioxKeys, sonioxApiKeyRef]);
 
   const updateSonioxCaptionState = useCallback(() => {
     const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current, languagePairRef.current);
@@ -144,8 +197,21 @@ export function useSonioxTranslation({
     setTranslationCaptions(next.translationCaptions);
   }, [languagePairRef, setCaptions, setTranslationCaptions]);
 
-  const handleSonioxResult = useCallback(
-    (result: SonioxRealtimeResult) => {
+  const teardownSonioxRecordings = useCallback(() => {
+    const active = sonioxRecordingsRef.current;
+    sonioxRecordingsRef.current = [];
+    connectedRecordingIndicesRef.current = new Set();
+    active.forEach((entry) => {
+      try {
+        entry.recording.cancel();
+      } catch {
+        // The recording may already be finished.
+      }
+    });
+  }, []);
+
+  const processSonioxResult = useCallback(
+    (role: SonioxRecordingRole, result: SonioxRealtimeResult) => {
       const buffer = sonioxCaptionBufferRef.current;
       const pair = languagePairRef.current;
       const debugEnabled = isSonioxDebugEnabled();
@@ -162,15 +228,21 @@ export function useSonioxTranslation({
         if (!token.text) return;
 
         const translationStatus = getSonioxTokenKind(token);
+        // Originals (and language detection) come from one designated stream
+        // only; in split mode each stream contributes only its own target's
+        // translations. This keeps dual streams from double-writing buffers.
+        if (translationStatus === "original" && !role.isOriginalSource) return;
+
         const language = getSonioxOutputLanguage(token, translationStatus, pair);
         const sourceLanguageFromToken = normalizeSonioxLanguage(token.source_language, pair);
-        if (!language) {
+        if (!language || (translationStatus === "translation" && role.translationFilter && language !== role.translationFilter)) {
           if (debugEnabled) {
             console.debug("[soniox-token]", {
               finalAudioProcessedMs: result.final_audio_proc_ms,
               index: tokenIndex,
               isFinal: token.is_final === true,
               rawLanguage: token.language,
+              recordingIndex: role.index,
               skipped: true,
               sourceLanguage: sourceLanguageFromToken,
               text: token.text,
@@ -182,7 +254,7 @@ export function useSonioxTranslation({
 
         if (translationStatus === "original") {
           trackSourceLanguage(language, token.text);
-        } else if (sourceLanguageFromToken) {
+        } else if (sourceLanguageFromToken && role.isOriginalSource) {
           trackSourceLanguageEvidence(
             sourceLanguageFromToken,
             Math.max(getMinSwitchEvidence(sourceLanguageFromToken), token.text.trim().length)
@@ -190,7 +262,7 @@ export function useSonioxTranslation({
         }
 
         const finalTokenKey = token.is_final
-          ? getSonioxFinalTokenKey(token, translationStatus, language, result, tokenIndex)
+          ? `${role.index}:${getSonioxFinalTokenKey(token, translationStatus, language, result, tokenIndex)}`
           : null;
         if (finalTokenKey && hasSonioxFinalTokenKey(finalTokenKey)) {
           logSonioxTokenDebug(
@@ -273,7 +345,7 @@ export function useSonioxTranslation({
   );
 
   const startSonioxTranslation = useCallback(
-    async (audioInputId?: string) => {
+    async (audioInputId: string | undefined, displayMode: DisplayMode) => {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error("This browser does not support microphone capture.");
       }
@@ -293,53 +365,28 @@ export function useSonioxTranslation({
       }
 
       trialSessionRef.current = false;
+      keyStashRef.current = [];
 
       const pair = languagePairRef.current;
-      const client = new SonioxClient({
-        config: createSonioxConnectionConfig,
-      });
-      const source = new MicrophoneSource({ constraints: audioConstraints });
-      const recording = client.realtime.record({
-        model: "stt-rt-v4",
-        language_hints: getPairLanguages(pair),
-        enable_language_identification: true,
-        enable_endpoint_detection: true,
-        translation: {
-          type: "two_way",
-          language_a: pair.a,
-          language_b: pair.b,
-        },
-        auto_reconnect: true,
-        source,
-      });
+      const plans: Array<{ targetLanguage: TargetLanguage; role: SonioxRecordingRole }> =
+        displayMode === "single"
+          ? [
+              {
+                targetLanguage:
+                  focusTargetLockRef.current ?? getFocusTargetLanguage(sourceLanguageRef.current, pair),
+                role: { index: 0, translationFilter: null, isOriginalSource: true },
+              },
+            ]
+          : [
+              { targetLanguage: pair.a, role: { index: 0, translationFilter: pair.a, isOriginalSource: false } },
+              { targetLanguage: pair.b, role: { index: 1, translationFilter: pair.b, isOriginalSource: true } },
+            ];
 
-      sonioxRecordingRef.current = recording;
-
-      recording.on("connected", () => {
-        if (sonioxRecordingRef.current !== recording) return;
-        setRealtimeStatus("live");
-      });
-      recording.on("result", handleSonioxResult);
-      recording.on("finalized", () => {
-        if (sonioxRecordingRef.current !== recording) return;
-        sonioxCaptionBufferRef.current.partialDisplay = createEmptyCaptionMap(pair);
-        sonioxCaptionBufferRef.current.partialOriginal = createEmptyCaptionMap(pair);
-        sonioxCaptionBufferRef.current.partialTranslation = createEmptyCaptionMap(pair);
-        finalizeCurrentFocusSegments();
-        updateSonioxCaptionState();
-      });
-      recording.on("finished", () => {
-        if (sonioxRecordingRef.current !== recording) return;
-        sonioxRecordingRef.current = null;
-        if (statusRef.current === "stopping") return;
-        setRealtimeStatus("idle");
-        if (trialSessionRef.current) onTrialEnded?.();
-      });
-      recording.on("error", (caughtError) => {
-        if (sonioxRecordingRef.current !== recording) return;
-        sonioxRecordingRef.current = null;
-        if (statusRef.current === "idle" || statusRef.current === "stopping") return;
-
+      // One gated request mints every key the session needs: a Start consumes
+      // one trial slot whether it opens one stream or two.
+      try {
+        keyStashRef.current = await fetchSonioxKeys(plans.length);
+      } catch (caughtError) {
         if (
           caughtError instanceof TrialDeniedError &&
           (caughtError.reason === "client_exhausted" || caughtError.reason === "global_exhausted")
@@ -348,59 +395,152 @@ export function useSonioxTranslation({
           onTrialDenied?.(caughtError.reason);
           return;
         }
+        throw caughtError;
+      }
 
-        // The server cuts trial sessions at the time limit, which surfaces
-        // here as a websocket error; show the trial-ended card, not a red banner.
-        if (trialSessionRef.current || caughtError instanceof TrialSessionEndedError) {
+      const active: ActiveSonioxRecording[] = [];
+      sonioxRecordingsRef.current = active;
+      connectedRecordingIndicesRef.current = new Set();
+      plannedRecordingCountRef.current = plans.length;
+
+      plans.forEach((plan) => {
+        const client = new SonioxClient({
+          config: createSonioxConnectionConfig,
+        });
+        const source = new MicrophoneSource({ constraints: audioConstraints });
+        const recording = client.realtime.record({
+          model: "stt-rt-v4",
+          language_hints: getPairLanguages(pair),
+          enable_language_identification: true,
+          enable_endpoint_detection: true,
+          translation: {
+            type: "one_way",
+            target_language: plan.targetLanguage,
+          },
+          auto_reconnect: true,
+          source,
+        });
+
+        const entry: ActiveSonioxRecording = { recording, role: plan.role };
+        active.push(entry);
+
+        const isCurrent = () => sonioxRecordingsRef.current.includes(entry);
+
+        recording.on("connected", () => {
+          if (!isCurrent()) return;
+          connectedRecordingIndicesRef.current.add(plan.role.index);
+          if (connectedRecordingIndicesRef.current.size >= plannedRecordingCountRef.current) {
+            setRealtimeStatus("live");
+          }
+        });
+        recording.on("result", (result) => {
+          if (!isCurrent()) return;
+          processSonioxResult(entry.role, result);
+        });
+        recording.on("finalized", () => {
+          if (!isCurrent()) return;
+          const buffer = sonioxCaptionBufferRef.current;
+          if (entry.role.translationFilter) {
+            buffer.partialTranslation[entry.role.translationFilter] = "";
+          } else {
+            buffer.partialTranslation = createEmptyCaptionMap(pair);
+          }
+          if (entry.role.isOriginalSource) {
+            buffer.partialDisplay = createEmptyCaptionMap(pair);
+            buffer.partialOriginal = createEmptyCaptionMap(pair);
+            finalizeCurrentFocusSegments();
+          }
+          updateSonioxCaptionState();
+        });
+        recording.on("finished", () => {
+          if (!isCurrent()) return;
+          // One stream ending ends the session: in split mode a single
+          // surviving stream would show half the captions.
+          teardownSonioxRecordings();
+          if (statusRef.current === "stopping") return;
           setRealtimeStatus("idle");
-          onTrialEnded?.();
-          return;
-        }
+          if (trialSessionRef.current) onTrialEnded?.();
+        });
+        recording.on("error", (caughtError) => {
+          if (!isCurrent()) return;
+          teardownSonioxRecordings();
+          if (statusRef.current === "idle" || statusRef.current === "stopping") return;
 
-        setError(caughtError instanceof Error ? caughtError.message : "Soniox realtime API error.");
-        setRealtimeStatus("error");
-      });
-      recording.on("state_change", ({ new_state }) => {
-        if (sonioxRecordingRef.current !== recording) return;
-        if (new_state === "recording") setRealtimeStatus("live");
-        if (new_state === "reconnecting" || new_state === "connecting") setRealtimeStatus("connecting");
+          if (
+            caughtError instanceof TrialDeniedError &&
+            (caughtError.reason === "client_exhausted" || caughtError.reason === "global_exhausted")
+          ) {
+            setRealtimeStatus("idle");
+            onTrialDenied?.(caughtError.reason);
+            return;
+          }
+
+          // The server cuts trial sessions at the time limit, which surfaces
+          // here as a websocket error; show the trial-ended card, not a red banner.
+          if (trialSessionRef.current || caughtError instanceof TrialSessionEndedError) {
+            setRealtimeStatus("idle");
+            onTrialEnded?.();
+            return;
+          }
+
+          setError(caughtError instanceof Error ? caughtError.message : "Soniox realtime API error.");
+          setRealtimeStatus("error");
+        });
+        recording.on("state_change", ({ new_state }) => {
+          if (!isCurrent()) return;
+          if (new_state === "recording") {
+            connectedRecordingIndicesRef.current.add(plan.role.index);
+            if (connectedRecordingIndicesRef.current.size >= plannedRecordingCountRef.current) {
+              setRealtimeStatus("live");
+            }
+          }
+          if (new_state === "reconnecting" || new_state === "connecting") {
+            connectedRecordingIndicesRef.current.delete(plan.role.index);
+            setRealtimeStatus("connecting");
+          }
+        });
       });
 
       void refreshAudioInputs();
     },
     [
       createSonioxConnectionConfig,
+      fetchSonioxKeys,
       finalizeCurrentFocusSegments,
-      handleSonioxResult,
+      focusTargetLockRef,
       languagePairRef,
       onTrialDenied,
       onTrialEnded,
+      processSonioxResult,
       refreshAudioInputs,
       setError,
       setRealtimeStatus,
+      sourceLanguageRef,
       statusRef,
+      teardownSonioxRecordings,
       updateSonioxCaptionState,
     ]
   );
 
   const cancelSonioxRecording = useCallback(() => {
-    const recording = sonioxRecordingRef.current;
-    sonioxRecordingRef.current = null;
-    recording?.cancel();
-  }, []);
+    teardownSonioxRecordings();
+  }, [teardownSonioxRecordings]);
 
   const stopSonioxRecording = useCallback(async () => {
-    const recording = sonioxRecordingRef.current;
-    if (!recording) return;
+    const active = sonioxRecordingsRef.current;
+    if (!active.length) return;
 
-    try {
-      await recording.stop();
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Could not stop Soniox recording cleanly.");
+    const results = await Promise.allSettled(active.map((entry) => entry.recording.stop()));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) {
+      setError(
+        failure.reason instanceof Error ? failure.reason.message : "Could not stop Soniox recording cleanly."
+      );
     }
 
-    if (sonioxRecordingRef.current === recording) {
-      sonioxRecordingRef.current = null;
+    if (sonioxRecordingsRef.current === active) {
+      sonioxRecordingsRef.current = [];
+      connectedRecordingIndicesRef.current = new Set();
     }
   }, [setError]);
 

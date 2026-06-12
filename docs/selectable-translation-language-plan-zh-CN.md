@@ -15,6 +15,7 @@
 | OpenAI 语言集 | 官方 13 种输出语言：`en zh es pt fr ja ru de ko hi id vi it`；服务端白名单从 9 扩到 13 |
 | Focus 自动切向 | 三层：①不同文字系统 → 文字正则（现状）；②同文字系统 → **停用词证据**接入现有证据累积机制；③新增**手动方向锁定**（Auto / 锁 A→B / 锁 B→A）兜底，对 Soniox 也生效 |
 | Soniox 语言判别 | 不变：继续用 token 自带的 `language` / `source_language` 元数据，任意组合全自动 |
+| **2026-06-12 修订：翻译引擎** | Soniox 全面改用 **one_way**（第三语言也被翻译）：Focus 单流（target 跟随检测/锁定，切向时重启会话），Split **双流**（每语言一条，音频费用 ×2，已确认接受）；后端 `keyCount` 支持一次闸门签发两把 key，一次 Start 消耗一次试用配额 |
 | 导出格式 | **保持 .txt 不变**，仅节标题与内容跟随会话的语言对 |
 | 旧存档兼容 | IndexedDB 旧记录无 `languages` 字段 → 默认按 `["en","zh"]` 读取与导出，不迁移不删除 |
 | 后端 / 试用闸 | **除 OpenAI 白名单扩容外零改动**（Soniox 语言配置在浏览器端 SDK 参数里，临时 key 不限语言） |
