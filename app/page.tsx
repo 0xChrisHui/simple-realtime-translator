@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { CaptionStage } from "../components/CaptionStage";
@@ -16,18 +16,19 @@ import { useSourceLanguage } from "../hooks/useSourceLanguage";
 import { useTranscriptSession } from "../hooks/useTranscriptSession";
 import {
   clampCaptionFontSize,
+  createEmptyCaptionMap,
   formatCaptionFontSizeInput,
   getFocusTargetLanguage,
   roundCaptionFontSize,
 } from "../lib/caption-text";
 import {
+  LANGUAGE_PAIR_STORAGE_KEY,
   MIN_CAPTION_FONT_SIZE,
   MISSING_OPENAI_API_KEY_CAPTION,
   MISSING_OPENAI_API_KEY_MESSAGE,
   OPENAI_API_KEY_STORAGE_KEY,
   SONIOX_API_KEY_STORAGE_KEY,
   SPLIT_CAPTION_TARGET_LINES,
-  TARGETS,
   WATERMARK_IMAGE,
 } from "../lib/constants";
 import {
@@ -35,6 +36,10 @@ import {
   getCaptionLineHeightRatio,
   getDefaultCaptionFontSize,
   getDefaultCaptionFontSizes,
+  getPairLanguages,
+  getPairTargets,
+  isLanguageCode,
+  toOpenAiLanguagePair,
 } from "../lib/languages";
 import type { TrialDenyReason } from "../lib/trial";
 import type {
@@ -43,9 +48,18 @@ import type {
   CaptionFontSizeMap,
   CaptionMap,
   DisplayMode,
+  LanguagePair,
   Status,
   TargetLanguage,
 } from "../lib/types";
+
+function buildDefaultFontSizeInputs(pair: LanguagePair): CaptionFontSizeInputMap {
+  const inputs: CaptionFontSizeInputMap = {};
+  getPairLanguages(pair).forEach((code) => {
+    inputs[code] = String(getDefaultCaptionFontSize(code));
+  });
+  return inputs;
+}
 
 type CaptionFontStyle = CSSProperties & {
   "--caption-font-size-en": string;
@@ -55,21 +69,18 @@ type CaptionFontStyle = CSSProperties & {
 
 export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
-  const [captions, setCaptions] = useState<CaptionMap>({ en: "", zh: "" });
-  const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>({ en: "", zh: "" });
+  const [captions, setCaptions] = useState<CaptionMap>(() => createEmptyCaptionMap());
+  const [translationCaptions, setTranslationCaptions] = useState<CaptionMap>(() => createEmptyCaptionMap());
   const [savePanelOpen, setSavePanelOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("dual");
   const [error, setError] = useState("");
+  const [languagePair, setLanguagePair] = useState<LanguagePair>(DEFAULT_LANGUAGE_PAIR);
   const [captionFontSizes, setCaptionFontSizes] = useState<CaptionFontSizeMap>(() =>
     getDefaultCaptionFontSizes(DEFAULT_LANGUAGE_PAIR)
   );
-  const [captionFontSizeInputs, setCaptionFontSizeInputs] = useState<CaptionFontSizeInputMap>(() => {
-    const inputs: CaptionFontSizeInputMap = {};
-    TARGETS.forEach(({ code }) => {
-      inputs[code] = String(getDefaultCaptionFontSize(code));
-    });
-    return inputs;
-  });
+  const [captionFontSizeInputs, setCaptionFontSizeInputs] = useState<CaptionFontSizeInputMap>(() =>
+    buildDefaultFontSizeInputs(DEFAULT_LANGUAGE_PAIR)
+  );
   const [apiProvider, setApiProvider] = useState<ApiProvider>("soniox");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [sonioxApiKey, setSonioxApiKey] = useState("");
@@ -81,7 +92,12 @@ export default function Home() {
   const apiProviderRef = useRef<ApiProvider>("soniox");
   const openaiApiKeyRef = useRef("");
   const sonioxApiKeyRef = useRef("");
-  const sourceLanguageRef = useRef<TargetLanguage>("en");
+  const languagePairRef = useRef<LanguagePair>(DEFAULT_LANGUAGE_PAIR);
+  // Remembers the Soniox-mode pair while OpenAI (13 output languages only)
+  // temporarily narrows the selection.
+  const sonioxLanguagePairRef = useRef<LanguagePair>(DEFAULT_LANGUAGE_PAIR);
+  const applyLanguagePairRef = useRef<(next: LanguagePair) => void>(() => {});
+  const sourceLanguageRef = useRef<TargetLanguage>(DEFAULT_LANGUAGE_PAIR.a);
   const captionScrollerRefs = useRef<Partial<Record<TargetLanguage, HTMLDivElement>>>({});
   const manualCaptionFontSizeOverridesRef = useRef<Partial<Record<TargetLanguage, boolean>>>({});
   const cleanupRealtimeRef = useRef<() => void>(() => {});
@@ -112,7 +128,7 @@ export default function Home() {
     downloadTranscriptSession,
     deleteTranscriptSession,
     clearTranscriptSessionHistory,
-  } = useTranscriptSession({ apiProviderRef, sourceLanguageRef, setError });
+  } = useTranscriptSession({ apiProviderRef, sourceLanguageRef, languagePairRef, setError });
 
   const handleCommittedSourceLanguageChange = useCallback((language: TargetLanguage) => {
     switchSingleTargetRef.current(language);
@@ -145,6 +161,7 @@ export default function Home() {
     resetSourceLanguageTracking,
   } = useSourceLanguage({
     sourceLanguageRef,
+    languagePairRef,
     finalizeCurrentFocusSegments,
     onCommittedSourceLanguageChange: handleCommittedSourceLanguageChange,
   });
@@ -158,6 +175,7 @@ export default function Home() {
 
   const { startOpenAiTranslation, switchSingleTarget, switchAudioInput, cleanupOpenAi } = useOpenAiTranslation({
     statusRef,
+    languagePairRef,
     setRealtimeStatus,
     setError,
     setCaptions,
@@ -182,6 +200,7 @@ export default function Home() {
     resetSonioxFinalTokenKeys,
   } = useSonioxTranslation({
       statusRef,
+      languagePairRef,
       setRealtimeStatus,
       setError,
       setCaptions,
@@ -215,12 +234,14 @@ export default function Home() {
     };
   }, [switchSingleTarget]);
 
+  const pairTargets = useMemo(() => getPairTargets(languagePair), [languagePair]);
+
   const autoFitSplitCaptionFontSizes = useCallback(() => {
     if (displayMode !== "dual") return;
 
     const fittedSizes: Partial<CaptionFontSizeMap> = {};
 
-    TARGETS.forEach(({ code }) => {
+    pairTargets.forEach(({ code }) => {
       if (manualCaptionFontSizeOverridesRef.current[code]) return;
 
       const scroller = captionScrollerRefs.current[code];
@@ -250,7 +271,7 @@ export default function Home() {
       const next = { ...previous };
       let changed = false;
 
-      TARGETS.forEach(({ code }) => {
+      pairTargets.forEach(({ code }) => {
         const fittedSize = fittedSizes[code];
         if (!fittedSize || Math.abs((previous[code] ?? 0) - fittedSize) < 0.05) return;
 
@@ -264,7 +285,7 @@ export default function Home() {
       const next = { ...previous };
       let changed = false;
 
-      TARGETS.forEach(({ code }) => {
+      pairTargets.forEach(({ code }) => {
         const fittedSize = fittedSizes[code];
         if (!fittedSize) return;
 
@@ -277,11 +298,11 @@ export default function Home() {
 
       return changed ? next : previous;
     });
-  }, [displayMode]);
+  }, [displayMode, pairTargets]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      TARGETS.forEach(({ code }) => {
+      pairTargets.forEach(({ code }) => {
         const scroller = captionScrollerRefs.current[code];
         if (!scroller) return;
         scroller.scrollTop = scroller.scrollHeight;
@@ -289,7 +310,7 @@ export default function Home() {
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [captionFontSizes, captions, displayMode, focusSegments, translationCaptions]);
+  }, [captionFontSizes, captions, displayMode, focusSegments, pairTargets, translationCaptions]);
 
   useEffect(() => {
     if (displayMode !== "dual") return;
@@ -334,6 +355,28 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(LANGUAGE_PAIR_STORAGE_KEY);
+      if (!raw) return;
+
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+
+      const { a, b } = parsed as { a?: unknown; b?: unknown };
+      if (!isLanguageCode(a) || !isLanguageCode(b) || a === b) return;
+
+      const stored: LanguagePair = { a, b };
+      languagePairRef.current = stored;
+      sonioxLanguagePairRef.current = stored;
+      setLanguagePair(stored);
+      setCaptionFontSizes(getDefaultCaptionFontSizes(stored));
+      setCaptionFontSizeInputs(buildDefaultFontSizeInputs(stored));
+    } catch {
+      // Corrupted storage falls back to the default pair.
+    }
+  }, []);
+
   const handleApiProviderChange = useCallback((value: string) => {
     if (statusRef.current !== "idle" && statusRef.current !== "error") return;
 
@@ -342,7 +385,24 @@ export default function Home() {
     setApiProvider(nextProvider);
     setDisplayMode(nextProvider === "openai" ? "single" : "dual");
     setError("");
+
+    // OpenAI serves 13 output languages; narrow the pair while remembering
+    // the Soniox-mode selection so switching back restores it.
+    const currentPair = languagePairRef.current;
+    if (nextProvider === "openai") {
+      sonioxLanguagePairRef.current = currentPair;
+      const narrowed = toOpenAiLanguagePair(currentPair);
+      if (narrowed.a !== currentPair.a || narrowed.b !== currentPair.b) {
+        applyLanguagePairRef.current(narrowed);
+      }
+    } else {
+      const remembered = sonioxLanguagePairRef.current;
+      if (remembered.a !== currentPair.a || remembered.b !== currentPair.b) {
+        applyLanguagePairRef.current(remembered);
+      }
+    }
   }, []);
+
 
   const handleOpenAiApiKeyChange = useCallback((value: string) => {
     const nextApiKey = value.trim();
@@ -426,12 +486,34 @@ export default function Home() {
   }, [status]);
 
   const resetCaptionState = useCallback(() => {
-    setCaptions({ en: "", zh: "" });
-    setTranslationCaptions({ en: "", zh: "" });
+    setCaptions(createEmptyCaptionMap(languagePairRef.current));
+    setTranslationCaptions(createEmptyCaptionMap(languagePairRef.current));
     resetTranscriptCaptureState();
     resetSourceLanguageTracking();
     resetSonioxBuffers();
   }, [resetSonioxBuffers, resetSourceLanguageTracking, resetTranscriptCaptureState]);
+
+  const applyLanguagePair = useCallback(
+    (next: LanguagePair) => {
+      languagePairRef.current = next;
+      setLanguagePair(next);
+      manualCaptionFontSizeOverridesRef.current = {};
+      setCaptionFontSizes(getDefaultCaptionFontSizes(next));
+      setCaptionFontSizeInputs(buildDefaultFontSizeInputs(next));
+      resetCaptionState();
+
+      try {
+        window.localStorage.setItem(LANGUAGE_PAIR_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // The selection still applies to this tab without persistence.
+      }
+    },
+    [resetCaptionState]
+  );
+
+  useEffect(() => {
+    applyLanguagePairRef.current = applyLanguagePair;
+  }, [applyLanguagePair]);
 
   const start = useCallback(
     async (audioInputId = selectedAudioInputIdRef.current) => {
@@ -605,10 +687,10 @@ export default function Home() {
   const apiKeyLabel = apiProvider === "openai" ? "OpenAI API key" : "Soniox API key";
   const apiKeyPlaceholder = apiProvider === "openai" ? "OpenAI key" : "Soniox key";
   const apiKeyValue = apiProvider === "openai" ? openaiApiKey : sonioxApiKey;
-  const singleTargetLanguage = getFocusTargetLanguage(sourceLanguage);
+  const singleTargetLanguage = getFocusTargetLanguage(sourceLanguage, languagePair);
   const latestFocusSegment = focusSegments[focusSegments.length - 1];
   const focusPanelLanguage = latestFocusSegment?.targetLanguage ?? singleTargetLanguage;
-  const focusTarget = TARGETS.find((target) => target.code === focusPanelLanguage) ?? TARGETS[0];
+  const focusTarget = pairTargets.find((target) => target.code === focusPanelLanguage) ?? pairTargets[0];
   const missingOpenAiApiKey = apiProvider === "openai" && !openaiApiKey.trim();
   const trialMode = apiProvider === "soniox" && !sonioxApiKey.trim();
   const waitingTranslationText = missingOpenAiApiKey ? MISSING_OPENAI_API_KEY_CAPTION : "等待翻译 Waiting translate";

@@ -8,24 +8,26 @@ import {
   SOURCE_LANGUAGE_SWITCH_MIN_CHUNKS,
 } from "../lib/constants";
 import { getMinSwitchEvidence } from "../lib/languages";
-import type { SourceLanguageSwitchCandidate, TargetLanguage } from "../lib/types";
+import type { LanguagePair, SourceLanguageSwitchCandidate, TargetLanguage } from "../lib/types";
 
 type UseSourceLanguageParams = {
   sourceLanguageRef: MutableRefObject<TargetLanguage>;
+  languagePairRef: MutableRefObject<LanguagePair>;
   finalizeCurrentFocusSegments: () => void;
   onCommittedSourceLanguageChange?: (language: TargetLanguage) => void;
 };
 
 export function useSourceLanguage({
   sourceLanguageRef,
+  languagePairRef,
   finalizeCurrentFocusSegments,
   onCommittedSourceLanguageChange,
 }: UseSourceLanguageParams) {
-  const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>("en");
+  const [sourceLanguage, setSourceLanguage] = useState<TargetLanguage>(languagePairRef.current.a);
 
   const sourceLanguageConfirmedRef = useRef(false);
   const sourceLanguageSwitchCandidateRef = useRef<SourceLanguageSwitchCandidate | null>(null);
-  const lastInputLanguageRef = useRef<TargetLanguage>("en");
+  const lastInputLanguageRef = useRef<TargetLanguage>(languagePairRef.current.a);
 
   const commitSourceLanguage = useCallback(
     (language: TargetLanguage) => {
@@ -103,12 +105,13 @@ export function useSourceLanguage({
   );
 
   const resetSourceLanguageTracking = useCallback(() => {
-    setSourceLanguage("en");
-    sourceLanguageRef.current = "en";
+    const initialLanguage = languagePairRef.current.a;
+    setSourceLanguage(initialLanguage);
+    sourceLanguageRef.current = initialLanguage;
     sourceLanguageConfirmedRef.current = false;
     sourceLanguageSwitchCandidateRef.current = null;
-    lastInputLanguageRef.current = "en";
-  }, [sourceLanguageRef]);
+    lastInputLanguageRef.current = initialLanguage;
+  }, [languagePairRef, sourceLanguageRef]);
 
   return {
     sourceLanguage,

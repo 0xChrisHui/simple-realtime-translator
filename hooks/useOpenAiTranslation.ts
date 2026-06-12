@@ -9,13 +9,15 @@ import {
   getFocusTargetLanguage,
   isOutputTranscriptDoneEvent,
 } from "../lib/caption-text";
-import { DISPLAY_CAPTION_MAX_CHARS, INPUT_TRANSCRIPT_TARGET, TARGETS } from "../lib/constants";
-import type { CaptionMap, DisplayMode, RealtimeEvent, Status, TargetLanguage } from "../lib/types";
+import { DISPLAY_CAPTION_MAX_CHARS } from "../lib/constants";
+import { getPairLanguages } from "../lib/languages";
+import type { CaptionMap, DisplayMode, LanguagePair, RealtimeEvent, Status, TargetLanguage } from "../lib/types";
 
 const RECONNECT_DELAYS_MS = [1000, 3000];
 
 type UseOpenAiTranslationParams = {
   statusRef: MutableRefObject<Status>;
+  languagePairRef: MutableRefObject<LanguagePair>;
   setRealtimeStatus: (nextStatus: Status) => void;
   setError: (message: string) => void;
   setCaptions: Dispatch<SetStateAction<CaptionMap>>;
@@ -34,6 +36,7 @@ type UseOpenAiTranslationParams = {
 
 export function useOpenAiTranslation({
   statusRef,
+  languagePairRef,
   setRealtimeStatus,
   setError,
   setCaptions,
@@ -54,7 +57,7 @@ export function useOpenAiTranslation({
   const dataChannelsRef = useRef<Partial<Record<TargetLanguage, RTCDataChannel>>>({});
   const connectedTargetsRef = useRef<Set<TargetLanguage>>(new Set());
   const activeTargetsRef = useRef<TargetLanguage[]>([]);
-  const inputTranscriptTargetRef = useRef<TargetLanguage>(INPUT_TRANSCRIPT_TARGET);
+  const inputTranscriptTargetRef = useRef<TargetLanguage>(languagePairRef.current.b);
   const reconnectAttemptsRef = useRef<Partial<Record<TargetLanguage, number>>>({});
   const reconnectTimersRef = useRef<Partial<Record<TargetLanguage, number>>>({});
   const sessionEpochRef = useRef(0);
@@ -207,7 +210,10 @@ export function useOpenAiTranslation({
             }));
           }
 
-          if (isOutputTranscriptDoneEvent(event.type) && targetLanguage === getFocusTargetLanguage(sourceLanguageRef.current)) {
+          if (
+            isOutputTranscriptDoneEvent(event.type) &&
+            targetLanguage === getFocusTargetLanguage(sourceLanguageRef.current, languagePairRef.current)
+          ) {
             finalizeCurrentFocusSegments();
           }
 
@@ -216,7 +222,7 @@ export function useOpenAiTranslation({
             event.type === "session.input_transcript.delta" &&
             typeof event.delta === "string"
           ) {
-            const inputLanguage = detectInputLanguage(event.delta, lastInputLanguageRef.current);
+            const inputLanguage = detectInputLanguage(event.delta, lastInputLanguageRef.current, languagePairRef.current);
             lastInputLanguageRef.current = inputLanguage;
             trackSourceLanguage(inputLanguage, event.delta);
             appendSessionTranscriptText(inputLanguage, event.delta);
@@ -279,6 +285,7 @@ export function useOpenAiTranslation({
       finalizeCurrentFocusSegments,
       getAccessCodeHeaders,
       handleConnectionFailure,
+      languagePairRef,
       lastInputLanguageRef,
       setCaptions,
       setError,
@@ -319,17 +326,18 @@ export function useOpenAiTranslation({
 
       // Focus view only displays one translation direction, so a single
       // session halves the per-minute OpenAI cost. Split view keeps both.
+      const pair = languagePairRef.current;
       const targets: TargetLanguage[] =
         displayMode === "single"
-          ? [getFocusTargetLanguage(sourceLanguageRef.current)]
-          : TARGETS.map((target) => target.code);
+          ? [getFocusTargetLanguage(sourceLanguageRef.current, pair)]
+          : getPairLanguages(pair);
       activeTargetsRef.current = targets;
-      inputTranscriptTargetRef.current = displayMode === "single" ? targets[0] : INPUT_TRANSCRIPT_TARGET;
+      inputTranscriptTargetRef.current = displayMode === "single" ? targets[0] : pair.b;
 
       await Promise.all(targets.map((target) => connectTranslation(target, sourceStream)));
       setRealtimeStatus("live");
     },
-    [connectTranslation, refreshAudioInputs, setRealtimeStatus, sourceLanguageRef]
+    [connectTranslation, languagePairRef, refreshAudioInputs, setRealtimeStatus, sourceLanguageRef]
   );
 
   // In single-connection (Focus) mode the translation direction follows the
@@ -343,7 +351,7 @@ export function useOpenAiTranslation({
       const sourceStream = sourceStreamRef.current;
       if (!sourceStream) return;
 
-      const newTarget = getFocusTargetLanguage(newSourceLanguage);
+      const newTarget = getFocusTargetLanguage(newSourceLanguage, languagePairRef.current);
       const oldTarget = activeTargetsRef.current[0];
       if (newTarget === oldTarget) return;
 
@@ -367,7 +375,7 @@ export function useOpenAiTranslation({
         singleSwitchInFlightRef.current = false;
       }
     },
-    [cleanupRealtimeRef, closeTargetConnection, connectTranslation, setError, setRealtimeStatus, statusRef]
+    [cleanupRealtimeRef, closeTargetConnection, connectTranslation, languagePairRef, setError, setRealtimeStatus, statusRef]
   );
 
   // Swaps the microphone without tearing down connections or the transcript
@@ -428,12 +436,12 @@ export function useOpenAiTranslation({
     peerConnectionsRef.current = {};
     connectedTargetsRef.current.clear();
     activeTargetsRef.current = [];
-    inputTranscriptTargetRef.current = INPUT_TRANSCRIPT_TARGET;
+    inputTranscriptTargetRef.current = languagePairRef.current.b;
 
     const sourceStream = sourceStreamRef.current;
     sourceStreamRef.current = null;
     sourceStream?.getTracks().forEach((track) => track.stop());
-  }, []);
+  }, [languagePairRef]);
 
   return {
     startOpenAiTranslation,

@@ -11,7 +11,7 @@ import {
 import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { createEmptyCaptionMap, getErrorMessage } from "../lib/caption-text";
 import { SONIOX_FINAL_TOKEN_KEY_LIMIT } from "../lib/constants";
-import { getMinSwitchEvidence } from "../lib/languages";
+import { getMinSwitchEvidence, getPairLanguages } from "../lib/languages";
 import {
   appendSonioxCaptionText,
   createEmptySonioxCaptionBuffer,
@@ -30,10 +30,11 @@ import {
   TrialSessionEndedError,
   type TrialDenyReason,
 } from "../lib/trial";
-import type { CaptionMap, SonioxCaptionBuffer, SonioxTokenKind, Status, TargetLanguage } from "../lib/types";
+import type { CaptionMap, LanguagePair, SonioxCaptionBuffer, SonioxTokenKind, Status, TargetLanguage } from "../lib/types";
 
 type UseSonioxTranslationParams = {
   statusRef: MutableRefObject<Status>;
+  languagePairRef: MutableRefObject<LanguagePair>;
   setRealtimeStatus: (nextStatus: Status) => void;
   setError: (message: string) => void;
   setCaptions: Dispatch<SetStateAction<CaptionMap>>;
@@ -53,6 +54,7 @@ type UseSonioxTranslationParams = {
 
 export function useSonioxTranslation({
   statusRef,
+  languagePairRef,
   setRealtimeStatus,
   setError,
   setCaptions,
@@ -137,14 +139,15 @@ export function useSonioxTranslation({
   }, [getAccessCodeHeaders, onTrialSession, sonioxApiKeyRef]);
 
   const updateSonioxCaptionState = useCallback(() => {
-    const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current);
+    const next = getSonioxCaptionMaps(sonioxCaptionBufferRef.current, languagePairRef.current);
     setCaptions(next.captions);
     setTranslationCaptions(next.translationCaptions);
-  }, [setCaptions, setTranslationCaptions]);
+  }, [languagePairRef, setCaptions, setTranslationCaptions]);
 
   const handleSonioxResult = useCallback(
     (result: SonioxRealtimeResult) => {
       const buffer = sonioxCaptionBufferRef.current;
+      const pair = languagePairRef.current;
       const debugEnabled = isSonioxDebugEnabled();
       const partialTouched: Record<SonioxTokenKind, Set<TargetLanguage>> = {
         original: new Set(),
@@ -159,8 +162,8 @@ export function useSonioxTranslation({
         if (!token.text) return;
 
         const translationStatus = getSonioxTokenKind(token);
-        const language = getSonioxOutputLanguage(token, translationStatus);
-        const sourceLanguageFromToken = normalizeSonioxLanguage(token.source_language);
+        const language = getSonioxOutputLanguage(token, translationStatus, pair);
+        const sourceLanguageFromToken = normalizeSonioxLanguage(token.source_language, pair);
         if (!language) {
           if (debugEnabled) {
             console.debug("[soniox-token]", {
@@ -254,7 +257,7 @@ export function useSonioxTranslation({
         });
       });
 
-      buffer.partialDisplay = createEmptyCaptionMap();
+      buffer.partialDisplay = createEmptyCaptionMap(pair);
       updateSonioxCaptionState();
     },
     [
@@ -262,6 +265,7 @@ export function useSonioxTranslation({
       appendFocusTranslationDelta,
       appendSessionTranscriptText,
       hasSonioxFinalTokenKey,
+      languagePairRef,
       trackSourceLanguage,
       trackSourceLanguageEvidence,
       updateSonioxCaptionState,
@@ -290,19 +294,20 @@ export function useSonioxTranslation({
 
       trialSessionRef.current = false;
 
+      const pair = languagePairRef.current;
       const client = new SonioxClient({
         config: createSonioxConnectionConfig,
       });
       const source = new MicrophoneSource({ constraints: audioConstraints });
       const recording = client.realtime.record({
         model: "stt-rt-v4",
-        language_hints: ["en", "zh"],
+        language_hints: getPairLanguages(pair),
         enable_language_identification: true,
         enable_endpoint_detection: true,
         translation: {
           type: "two_way",
-          language_a: "en",
-          language_b: "zh",
+          language_a: pair.a,
+          language_b: pair.b,
         },
         auto_reconnect: true,
         source,
@@ -317,9 +322,9 @@ export function useSonioxTranslation({
       recording.on("result", handleSonioxResult);
       recording.on("finalized", () => {
         if (sonioxRecordingRef.current !== recording) return;
-        sonioxCaptionBufferRef.current.partialDisplay = createEmptyCaptionMap();
-        sonioxCaptionBufferRef.current.partialOriginal = createEmptyCaptionMap();
-        sonioxCaptionBufferRef.current.partialTranslation = createEmptyCaptionMap();
+        sonioxCaptionBufferRef.current.partialDisplay = createEmptyCaptionMap(pair);
+        sonioxCaptionBufferRef.current.partialOriginal = createEmptyCaptionMap(pair);
+        sonioxCaptionBufferRef.current.partialTranslation = createEmptyCaptionMap(pair);
         finalizeCurrentFocusSegments();
         updateSonioxCaptionState();
       });
@@ -367,6 +372,7 @@ export function useSonioxTranslation({
       createSonioxConnectionConfig,
       finalizeCurrentFocusSegments,
       handleSonioxResult,
+      languagePairRef,
       onTrialDenied,
       onTrialEnded,
       refreshAudioInputs,
@@ -399,10 +405,10 @@ export function useSonioxTranslation({
   }, [setError]);
 
   const resetSonioxBuffers = useCallback(() => {
-    sonioxCaptionBufferRef.current = createEmptySonioxCaptionBuffer();
+    sonioxCaptionBufferRef.current = createEmptySonioxCaptionBuffer(languagePairRef.current);
     sonioxFinalTokenKeysRef.current = new Set();
     sonioxPreviousFinalTokenKeysRef.current = new Set();
-  }, []);
+  }, [languagePairRef]);
 
   // A fresh connection restarts audio timestamps at zero, so old dedup keys
   // could wrongly skip new tokens. Clearing keeps captions intact.

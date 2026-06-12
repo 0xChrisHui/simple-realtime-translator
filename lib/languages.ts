@@ -289,6 +289,29 @@ export function getPairLanguages(pair: LanguagePair): [LanguageCode, LanguageCod
   return [pair.a, pair.b];
 }
 
+export function isOpenAiLanguage(code: LanguageCode) {
+  return getLanguage(code).openai === true;
+}
+
+export function getOpenAiLanguageCodes() {
+  return LANGUAGE_CODES.filter(isOpenAiLanguage);
+}
+
+// Coerces a pair into one OpenAI can serve, replacing unsupported sides with
+// the defaults while keeping the two sides distinct.
+export function toOpenAiLanguagePair(pair: LanguagePair): LanguagePair {
+  let a = isOpenAiLanguage(pair.a) ? pair.a : DEFAULT_LANGUAGE_PAIR.a;
+  let b = isOpenAiLanguage(pair.b) ? pair.b : DEFAULT_LANGUAGE_PAIR.b;
+  if (a === b) {
+    if (b !== DEFAULT_LANGUAGE_PAIR.b) {
+      a = DEFAULT_LANGUAGE_PAIR.a === b ? DEFAULT_LANGUAGE_PAIR.b : DEFAULT_LANGUAGE_PAIR.a;
+    } else {
+      b = DEFAULT_LANGUAGE_PAIR.b === a ? DEFAULT_LANGUAGE_PAIR.a : DEFAULT_LANGUAGE_PAIR.b;
+    }
+  }
+  return { a, b };
+}
+
 export function getOtherPairLanguage(pair: LanguagePair, code: LanguageCode): LanguageCode {
   return code === pair.a ? pair.b : pair.a;
 }

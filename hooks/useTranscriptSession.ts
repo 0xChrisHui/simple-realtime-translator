@@ -35,6 +35,7 @@ import type {
   ApiProvider,
   CaptionMap,
   FocusTranscriptSegment,
+  LanguagePair,
   StoredTranscriptSession,
   TargetLanguage,
   TranscriptSessionStatus,
@@ -43,6 +44,7 @@ import type {
 type UseTranscriptSessionParams = {
   apiProviderRef: MutableRefObject<ApiProvider>;
   sourceLanguageRef: MutableRefObject<TargetLanguage>;
+  languagePairRef: MutableRefObject<LanguagePair>;
   setError: (updater: string | ((currentError: string) => string)) => void;
 };
 
@@ -61,7 +63,12 @@ function pruneStoredSegments(session: StoredTranscriptSession) {
   });
 }
 
-export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setError }: UseTranscriptSessionParams) {
+export function useTranscriptSession({
+  apiProviderRef,
+  sourceLanguageRef,
+  languagePairRef,
+  setError,
+}: UseTranscriptSessionParams) {
   const [focusSegments, setFocusSegments] = useState<FocusTranscriptSegment[]>([]);
   const [transcriptSessions, setTranscriptSessions] = useState<StoredTranscriptSession[]>([]);
   const [transcriptReadyVisible, setTranscriptReadyVisible] = useState(false);
@@ -294,7 +301,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
       if (!session) return;
 
       const sourceLanguage = sourceLanguageRef.current;
-      if (targetLanguage !== getFocusTargetLanguage(sourceLanguage)) return;
+      if (targetLanguage !== getFocusTargetLanguage(sourceLanguage, languagePairRef.current)) return;
 
       const normalizedDelta = delta.replace(/[ \t\r\n]+/g, " ");
       if (!normalizedDelta.trim()) return;
@@ -339,18 +346,20 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
       publishFocusSegments(session.segments);
       scheduleActiveTranscriptAutosave("partial");
     },
-    [publishFocusSegments, scheduleActiveTranscriptAutosave, sourceLanguageRef]
+    [languagePairRef, publishFocusSegments, scheduleActiveTranscriptAutosave, sourceLanguageRef]
   );
 
   const beginTranscriptSession = useCallback(() => {
     const now = Date.now();
+    const pair = languagePairRef.current;
     const session: StoredTranscriptSession = {
       id: createTranscriptId("session"),
       startedAt: now,
       stoppedAt: 0,
       provider: apiProviderRef.current,
+      languages: [pair.a, pair.b],
       segments: [],
-      transcriptText: createEmptyCaptionMap(),
+      transcriptText: createEmptyCaptionMap(pair),
       status: "draft",
       updatedAt: now,
     };
@@ -360,7 +369,7 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
     setFocusSegments([]);
     setTranscriptReadyVisible(false);
     void queueStoredTranscriptSessionSave(session);
-  }, [apiProviderRef, queueStoredTranscriptSessionSave]);
+  }, [apiProviderRef, languagePairRef, queueStoredTranscriptSessionSave]);
 
   const discardActiveTranscriptSession = useCallback(async () => {
     const activeSessionId = activeTranscriptSessionRef.current?.id;
@@ -422,9 +431,9 @@ export function useTranscriptSession({ apiProviderRef, sourceLanguageRef, setErr
 
   const resetTranscriptCaptureState = useCallback(() => {
     setFocusSegments([]);
-    savedCaptionsRef.current = createEmptyCaptionMap();
+    savedCaptionsRef.current = createEmptyCaptionMap(languagePairRef.current);
     focusPartialSegmentIdsRef.current = {};
-  }, []);
+  }, [languagePairRef]);
 
   const downloadTranscriptSession = useCallback(
     (session: StoredTranscriptSession) => {

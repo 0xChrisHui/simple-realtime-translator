@@ -22,6 +22,7 @@ export const MISSING_OPENAI_API_KEY_CAPTION = "请输入你的 API key\nPlease e
 export const MISSING_OPENAI_API_KEY_MESSAGE = "请输入你的 OpenAI API key / Please enter your OpenAI API key.";
 export const OPENAI_API_KEY_STORAGE_KEY = "translatorOpenAiApiKey";
 export const SONIOX_API_KEY_STORAGE_KEY = "translatorSonioxApiKey";
+export const LANGUAGE_PAIR_STORAGE_KEY = "translatorLanguagePair";
 export const SONIOX_DEBUG_STORAGE_KEY = "translatorSonioxDebug";
 export const TRANSCRIPT_AUTOSAVE_DELAY_MS = 800;
 export const TRANSCRIPT_PARTIAL_CHECKPOINT_MS = 5000;
