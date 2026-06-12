@@ -35,15 +35,23 @@ export function getTrialSeconds() {
   return readPositiveInt(process.env.TRIAL_SECONDS, DEFAULT_TRIAL_SECONDS);
 }
 
-// "full" requires both Upstash variables; without them the trial is disabled
+// The Upstash REST credentials. Depending on how the database is connected,
+// Vercel injects either the UPSTASH_REDIS_REST_* names or the KV_REST_API_*
+// names (Vercel Marketplace's KV-style aliases); accept both so the trial gate
+// works regardless of which the dashboard chose.
+function resolveRedisCredentials() {
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  return url && token ? { url, token } : null;
+}
+
+// "full" requires the Redis credentials; without them the trial is disabled
 // rather than silently dropping the global budget. Operators who accept the
 // weaker guarantee opt in explicitly with TRIAL_ENABLED=cookie-only.
 function resolveTrialMode(): "full" | "cookie-only" | null {
   const raw = (process.env.TRIAL_ENABLED ?? "off").trim().toLowerCase();
   if (raw === "cookie-only") return "cookie-only";
-  if (raw === "full" && process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    return "full";
-  }
+  if (raw === "full" && resolveRedisCredentials()) return "full";
   return null;
 }
 
@@ -155,7 +163,9 @@ export async function checkAndConsumeTrial(request: NextRequest): Promise<TrialD
 
   if (mode === "full") {
     try {
-      const redis = Redis.fromEnv();
+      const credentials = resolveRedisCredentials();
+      if (!credentials) return { allowed: false, reason: "client_exhausted" };
+      const redis = new Redis(credentials);
 
       const clientKey = `trial:client:${getClientIdentity(request)}:${today}`;
       const clientCount = await incrementWithTtl(redis, clientKey, CLIENT_KEY_TTL_SECONDS);

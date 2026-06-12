@@ -49,7 +49,7 @@ Live English ⇄ Chinese meeting captions in the browser, powered by Soniox or O
 | `TRIAL_SECONDS` | `180` | Trial session length, enforced server-side via the Soniox temporary key. |
 | `TRIAL_PER_CLIENT_PER_DAY` | `2` | Trials per client (IP+UA hash) per UTC day. |
 | `TRIAL_GLOBAL_PER_DAY` | `100` | Global trial budget per UTC day across all visitors (caps worst-case spend at roughly $1/day with defaults). |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | — | Required when `TRIAL_ENABLED=full`. Auto-injected by the Vercel Upstash integration. |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | — | Required when `TRIAL_ENABLED=full`. Auto-injected by the Vercel Upstash integration (the `KV_REST_API_URL` / `KV_REST_API_TOKEN` names it may use instead are also accepted). |
 | `ALLOWED_ORIGINS` | empty (check skipped) | Comma-separated origins allowed to use the trial, e.g. `https://your-app.vercel.app`. |
 | `NEXT_PUBLIC_WATERMARK_IMAGE` | empty | Optional watermark image URL or `public/` path for the caption screen. |
 
