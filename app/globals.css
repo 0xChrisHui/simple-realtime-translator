@@ -61,26 +61,28 @@ select {
   position: relative;
 }
 
+/* The strip wraps onto extra rows whenever the viewport (or browser zoom)
+   leaves too little room — nothing may ever be pushed out of frame. */
 .control-strip {
+  align-content: flex-start;
   align-items: center;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
-  height: 28px;
-  justify-content: flex-start;
-  max-width: calc(100vw - 16px);
+  justify-content: flex-end;
+  left: 8px;
+  min-height: 28px;
   opacity: 0.32;
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 3px 0;
   position: fixed;
   right: 8px;
-  scrollbar-width: none;
   top: 0;
   transition: opacity 0.16s ease;
-  white-space: nowrap;
-  width: max-content;
   z-index: 4;
+}
+
+.control-strip > * {
+  flex: 0 0 auto;
 }
 
 .control-strip::-webkit-scrollbar {
@@ -858,24 +860,6 @@ select {
     --split-panel-padding-top: 58px;
   }
 
-  .control-strip {
-    align-content: flex-start;
-    flex-wrap: wrap;
-    height: auto;
-    justify-content: flex-end;
-    left: 8px;
-    max-width: none;
-    min-height: 28px;
-    overflow-x: visible;
-    right: 8px;
-    white-space: normal;
-    width: auto;
-  }
-
-  .control-strip > * {
-    flex: 0 0 auto;
-  }
-
   .caption-panel {
     padding: 22px 26px;
   }
@@ -900,9 +884,11 @@ select {
     max-width: none;
     opacity: 1;
     overflow-x: auto;
+    overflow-y: hidden;
     padding-left: 8px;
     padding-right: 8px;
     right: 0;
+    scrollbar-width: none;
     white-space: nowrap;
   }
 
