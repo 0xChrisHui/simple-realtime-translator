@@ -15,7 +15,7 @@
 | OpenAI 语言集 | 官方 13 种输出语言：`en zh es pt fr ja ru de ko hi id vi it`；服务端白名单从 9 扩到 13 |
 | Focus 自动切向 | 三层：①不同文字系统 → 文字正则（现状）；②同文字系统 → **停用词证据**接入现有证据累积机制；③新增**手动方向锁定**（Auto / 锁 A→B / 锁 B→A）兜底，对 Soniox 也生效 |
 | Soniox 语言判别 | 不变：继续用 token 自带的 `language` / `source_language` 元数据，任意组合全自动 |
-| 导出格式 | **改为 Markdown（.md）**：`#` 标题 + `##` 每语言一节，节标题与内容跟随会话的语言对 |
+| 导出格式 | **保持 .txt 不变**，仅节标题与内容跟随会话的语言对 |
 | 旧存档兼容 | IndexedDB 旧记录无 `languages` 字段 → 默认按 `["en","zh"]` 读取与导出，不迁移不删除 |
 | 后端 / 试用闸 | **除 OpenAI 白名单扩容外零改动**（Soniox 语言配置在浏览器端 SDK 参数里，临时 key 不限语言） |
 | RTL 语言（ar/he/fa/ur） | 开放选择，字幕段落加 `dir="auto"`；标记为轻测试，问题反馈后修 |
@@ -92,26 +92,25 @@ API 事实依据（2026-06-12 查证）：
 ## P4：存档与导出跟随语言对
 
 - `normalizeStoredTranscriptSession`：读取 `languages` 字段，缺失或非法 → `["en", "zh"]`；
-- `formatTranscriptSession` 改输出 Markdown：
+- `formatTranscriptSession` 保持 .txt 纯文本结构，节标题与内容跟随语言对：
 
-```md
-# Simple Realtime Translator
+```txt
+Simple Realtime Translator
 Session: 2026-06-12 14:00:00 - 14:32:10
 
-## 中文
+中文
 （中文全文…）
 
-## 日本語
+日本語
 （日文全文…）
 ```
 
-- 节标题用 `nativeLabel`，顺序 = 会话 pair 顺序，空节省略；删除原“如果需要中文请翻到下方”双语提示行；
-- 下载文件名后缀改 `.md`（`translation-soniox-20260612-140000.md`），MIME `text/markdown`，保留 BOM；
-- SavePanel 说明文案同步（“一键 .md 导出”）；TrialEndedCard 底部小字不变。
+- 节标题用 `nativeLabel`，顺序 = 会话 pair 顺序，空节省略；原“如果需要中文请翻到下方”双语提示行仅在 pair 为 en/zh 时保留（对其他组合无意义）；
+- 文件名、扩展名（.txt）、MIME、BOM 全部不变；TrialEndedCard 底部小字不变。
 
 ### 验收标准
 
-- 新会话（中⇄日）导出 .md 两节正确；
+- 新会话（中⇄日）导出 .txt 两节正确；
 - 旧 IndexedDB 记录（无 languages 字段）正常显示在 Save 面板并按 en/zh 导出；
 - 空会话清理逻辑（`hasTranscriptText`）对任意 pair 生效。
 
